@@ -272,6 +272,28 @@ By default, `agent` runs the same free local preflight before it constructs an L
 client. The result is saved as `<output-dir>/preflight.json`; if preflight fails, no
 model request is made. `--skip-preflight` is reserved for troubleshooting.
 
+## Run the local visual demo
+
+V0.3 provides a local Streamlit interface for configuring one H5 patch, checking the
+model environment, running the Qwen agent and viewing the result cards, tool trace,
+RGB preview and SAM heatmap. Install the optional UI dependency once:
+
+```powershell
+python -m pip install -e ".[dev,llm,ui]"
+```
+
+Set the same `RSFUSION_LLM_*` variables used by the CLI, then start the page from the
+project root:
+
+```powershell
+rsfusion-ui
+```
+
+The page opens locally in your browser. It never asks for or stores an API key; the
+key remains in the terminal environment. It invokes the existing `rsfusion agent`
+workflow, so the runtime preflight, tool allowlist, output isolation and result JSON
+records remain active.
+
 ## Tests
 
 ```powershell

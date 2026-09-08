@@ -86,6 +86,14 @@ Preflight does not perform inference; use `infer-h5` as the full CUDA smoke test
 If preflight fails, the agent exits before any paid LLM request. `--skip-preflight`
 exists only for diagnosing an already-known environment.
 
+## Local visual demo
+
+After installing the optional `ui` dependency, run `rsfusion-ui` from the repository
+root. The Streamlit page is a local presentation layer over the normal CLI workflow:
+it does not contain an alternate inference path or accept API keys in the browser.
+It displays preflight status, tool calls, token/cost estimates, metrics, and local
+preview artifacts from the generated result directory.
+
 ## Security notes
 
 - Set `RSFUSION_LLM_API_KEY` (or a provider-specific fallback) in the environment;
