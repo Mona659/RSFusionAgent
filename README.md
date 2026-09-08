@@ -11,23 +11,17 @@ An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion
 RSFusionAgent V1 executes a reproducible tool workflow instead of asking a language
 model to manipulate image arrays:
 
-```text
-DownT1YRE.h5 + DownT2YRE.h5 + checkpoint
-                    |
-                    v
-           inspect_h5_dataset
-                    |
-                    v
-          prepare_yre151_patch
-                    |
-                    v
-           run_dc_stsf_patch
-                    |
-                    v
-           validate_prediction
-                    |
-                    v
-       evaluate + save artifacts + report
+```mermaid
+flowchart LR
+    A["YRE HDF5 pair"] --> B["HDF5 inspector"]
+    B --> C["Patch adapter"]
+    C --> D["Traceable agent state"]
+    D --> E["Isolated PyTorch runtime"]
+    E --> F["DC-STSF CUDA inference"]
+    F --> G["Metrics tool"]
+    F --> H["Artifact tool"]
+    G --> I["JSON and Markdown report"]
+    H --> J["151-band TIFF, RGB and SAM"]
 ```
 
 Every step is recorded in `run_manifest.json`. Large arrays are exchanged through
@@ -36,6 +30,24 @@ artifact paths rather than placed in agent state.
 The architecture is inspired by the task-aware tool orchestration ideas in
 [RS-Agent](https://github.com/IntelliSensing/RS-Agent), while this repository
 implements an executable workflow for the author's YRE fusion model.
+
+## Verified YRE demo
+
+The V1 workflow was verified end to end on patch index 0 using the epoch-200
+checkpoint. The private HDF5 data and checkpoint are not included in this repository.
+
+| Fused RGB preview | Per-pixel SAM heatmap |
+|---|---|
+| ![YRE fused RGB preview](docs/assets/yre_rgb_preview.png) | ![YRE SAM heatmap](docs/assets/yre_sam_heatmap.png) |
+
+| PSNR (dB) | RMSE | SAM (degree) | ERGAS | SSIM | CC |
+|---:|---:|---:|---:|---:|---:|
+| 32.0344 | 0.02502 | 2.0984 | 1.8523 | 0.96577 | 0.97729 |
+
+The two independent CUDA runs produced identical Agent outputs. Compared with the
+historical TIFF exported by the legacy test script, the maximum absolute pixel
+difference was `1.85e-4`, while all six reported metrics agreed at the displayed
+precision.
 
 ## Frozen YRE-151 data contract
 
@@ -79,6 +91,10 @@ known legacy limitations.
 ```text
 RSFusionAgent/
 ├── docs/
+│   ├── assets/
+│   │   ├── yre_rgb_preview.png
+│   │   ├── yre_sam_heatmap.png
+│   │   └── yre_metrics.json
 │   └── data_contract.md
 ├── src/rsfusion_agent/
 │   ├── agent/
@@ -116,10 +132,10 @@ The neural network runs in a separate existing Python environment containing a
 compatible CUDA-enabled PyTorch installation. This avoids installing a second copy
 of PyTorch into the agent environment.
 
-For the current workstation:
+Set the model runtime path for the current terminal session:
 
 ```powershell
-$env:RSFUSION_MODEL_PYTHON = "C:\Users\think\.conda\envs\zmj310\python.exe"
+$env:RSFUSION_MODEL_PYTHON = "C:\path\to\model-env\Scripts\python.exe"
 ```
 
 Do not commit this machine-specific path. Set it in the terminal session or pass
@@ -128,9 +144,12 @@ Do not commit this machine-specific path. Set it in the terminal session or pass
 ## Inspect the HDF5 inputs
 
 ```powershell
+$auxH5 = "C:\path\to\YRE\DownT1YRE.h5"
+$targetH5 = "C:\path\to\YRE\DownT2YRE.h5"
+
 rsfusion inspect-h5 `
-  --aux-h5 "D:\file_zmj\dataset\cx\YRE\DownT1YRE.h5" `
-  --target-h5 "D:\file_zmj\dataset\cx\YRE\DownT2YRE.h5" `
+  --aux-h5 $auxH5 `
+  --target-h5 $targetH5 `
   --patch-index 0 `
   --pretty
 ```
@@ -138,11 +157,16 @@ rsfusion inspect-h5 `
 ## Run V1 inference
 
 ```powershell
+$auxH5 = "C:\path\to\YRE\DownT1YRE.h5"
+$targetH5 = "C:\path\to\YRE\DownT2YRE.h5"
+$checkpoint = "C:\path\to\checkpoints\model-epochs200.pth"
+$modelPython = "C:\path\to\model-env\Scripts\python.exe"
+
 rsfusion infer-h5 `
-  --aux-h5 "D:\file_zmj\dataset\cx\YRE\DownT1YRE.h5" `
-  --target-h5 "D:\file_zmj\dataset\cx\YRE\DownT2YRE.h5" `
-  --checkpoint "D:\file_zmj\projects\001NET1\result_YRE\0813-2008\backup_models\model-epochs200.pth" `
-  --model-python "C:\Users\think\.conda\envs\zmj310\python.exe" `
+  --aux-h5 $auxH5 `
+  --target-h5 $targetH5 `
+  --checkpoint $checkpoint `
+  --model-python $modelPython `
   --patch-index 0 `
   --device cuda `
   --output-dir "outputs\yre_patch_0001" `
@@ -171,7 +195,7 @@ manifest. A future raw-TIFF adapter will preserve target-MS geospatial metadata.
 ## Tests
 
 ```powershell
-pytest
+python -m pytest -q
 python -m ruff check --no-cache src tests examples
 ```
 
