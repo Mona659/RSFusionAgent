@@ -1,5 +1,7 @@
 # RSFusionAgent
 
+[![CI](https://github.com/Mona659/RSFusionAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/Mona659/RSFusionAgent/actions/workflows/ci.yml)
+
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
 > **V1 scope:** YRE reduced-resolution profile, 151 HS bands, preprocessed HDF5
@@ -26,6 +28,26 @@ flowchart LR
 
 Every step is recorded in `run_manifest.json`. Large arrays are exchanged through
 artifact paths rather than placed in agent state.
+
+## Agent control-plane architecture
+
+```mermaid
+flowchart TD
+    U["User / Streamlit UI"] --> P["Local runtime preflight"]
+    P -->|"ready"| A["Qwen tool-calling agent"]
+    P -->|"failed"| X["Stop before LLM billing"]
+    A --> T["Strict local tool allowlist"]
+    T --> I["Inspect configured YRE H5 pair"]
+    T --> R["Run one authorized DC-STSF patch"]
+    R --> C["Isolated Conda + CUDA process"]
+    C --> O["TIFF, metrics, report and previews"]
+    O --> J["agent_result / run_manifest / preflight JSON"]
+    J --> H["Local run-history viewer"]
+```
+
+The control plane does not transfer HDF5 pixels, NumPy arrays or checkpoint contents to
+the LLM. It is bounded by strict schemas, configured paths, one authorized patch index
+and a maximum tool-loop length.
 
 The architecture is inspired by the task-aware tool orchestration ideas in
 [RS-Agent](https://github.com/IntelliSensing/RS-Agent), while this repository
@@ -80,23 +102,30 @@ known legacy limitations.
 - [x] Calculate PSNR, RMSE, SAM, ERGAS, SSIM and CC
 - [x] Save a 151-band prediction TIFF, RGB preview and SAM heatmap
 - [x] Save machine-readable metrics, tool trace and Markdown report
+- [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
 - [ ] Accept three original TIFF inputs
 - [ ] Validate pre-registration and geospatial alignment
 - [ ] Perform overlapping whole-scene inference and weighted stitching
 - [x] Add optional LLM planning with strict function tools
+- [x] Provide a local Streamlit demo with metrics, previews and result downloads
+- [x] Reload a prior local run without another LLM request
+- [x] Retry only the known Windows native fast-fail once and record attempts
+- [x] Run Ruff and pytest in GitHub Actions
 - [ ] Add solution retrieval and experiment memory
-- [ ] Add a Gradio interface
 
 ## Project structure
 
 ```text
 RSFusionAgent/
+├── .github/workflows/
+│   └── ci.yml
 ├── docs/
 │   ├── assets/
 │   │   ├── yre_rgb_preview.png
 │   │   ├── yre_sam_heatmap.png
 │   │   └── yre_metrics.json
-│   └── data_contract.md
+│   ├── data_contract.md
+│   └── demo_script.md
 ├── src/rsfusion_agent/
 │   ├── agent/
 │   │   ├── llm_client.py
@@ -108,13 +137,17 @@ RSFusionAgent/
 │   ├── models/
 │   │   └── dc_stsf.py
 │   ├── runtime/
+│   │   ├── preflight_runner.py
 │   │   └── yre151_runner.py
 │   ├── tools/
 │   │   ├── artifacts.py
+│   │   ├── error_diagnosis.py
 │   │   ├── h5_patch.py
 │   │   ├── metrics.py
 │   │   ├── model_runtime.py
 │   │   └── raster_inspector.py
+│   ├── ui/
+│   │   └── streamlit_app.py
 │   └── cli.py
 ├── examples/
 ├── tests/
@@ -301,6 +334,8 @@ Every retry is recorded in the runtime result as `attempt_count` and
 `retried_exit_codes`. Set `--runtime-retries 0` to disable it, or at most `2` for
 troubleshooting. Path, CUDA, H5 validation and timeout failures are never retried
 blindly; the Agent receives a safe error category and recommended action instead.
+
+For a concise local interview demonstration, follow [docs/demo_script.md](docs/demo_script.md).
 
 ## Tests
 
