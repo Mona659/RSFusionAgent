@@ -9,6 +9,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from rsfusion_agent.agent.llm_client import OpenAIResponsesClient
+from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
+from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.agent.state import FusionRunRequest
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.h5_patch import inspect_h5_pair
@@ -59,6 +62,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     infer_parser.add_argument("--timeout", type=int, default=600)
     infer_parser.add_argument("--pretty", action="store_true")
+
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Use natural language and OpenAI function calling to orchestrate local tools.",
+    )
+    agent_parser.add_argument("--request", required=True, help="Natural-language task request.")
+    agent_parser.add_argument("--aux-h5", required=True)
+    agent_parser.add_argument("--target-h5", required=True)
+    agent_parser.add_argument("--checkpoint", required=True)
+    agent_parser.add_argument("--output-dir", required=True)
+    agent_parser.add_argument("--patch-index", type=int, default=0)
+    agent_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    agent_parser.add_argument(
+        "--model-python",
+        default=os.environ.get("RSFUSION_MODEL_PYTHON", sys.executable),
+        help="Python executable from an environment containing compatible PyTorch.",
+    )
+    agent_parser.add_argument(
+        "--llm-model",
+        default=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+        help="OpenAI model with Responses API function-calling support.",
+    )
+    agent_parser.add_argument(
+        "--base-url",
+        default=os.environ.get("OPENAI_BASE_URL") or None,
+        help="Optional OpenAI-compatible API base URL.",
+    )
+    agent_parser.add_argument("--max-turns", type=int, default=6)
+    agent_parser.add_argument("--timeout", type=int, default=600)
+    agent_parser.add_argument("--pretty", action="store_true")
     return parser
 
 
@@ -103,6 +136,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             result = YRE151PatchAgent().run(request)
         except (FileNotFoundError, IndexError, RuntimeError, TypeError, ValueError) as exc:
+            parser.error(str(exc))
+        indent = 2 if args.pretty else None
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=indent))
+        return 0
+
+    if args.command == "agent":
+        try:
+            context = LLMToolContext(
+                auxiliary_h5_path=Path(args.aux_h5),
+                target_h5_path=Path(args.target_h5),
+                checkpoint_path=Path(args.checkpoint),
+                model_python=Path(args.model_python),
+                output_dir=Path(args.output_dir),
+                patch_index=args.patch_index,
+                device=args.device,
+                timeout_seconds=args.timeout,
+            )
+            client = OpenAIResponsesClient(
+                model=args.llm_model,
+                base_url=args.base_url,
+            )
+            result = LLMFusionAgent(
+                client=client,
+                toolbox=AgentToolbox(context),
+                max_turns=args.max_turns,
+            ).run(args.request)
+        except Exception as exc:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=indent))

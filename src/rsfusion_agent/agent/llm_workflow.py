@@ -1,0 +1,104 @@
+"""Natural-language control plane using allowlisted function tools."""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from rsfusion_agent.agent.llm_client import ResponsesClient
+from rsfusion_agent.agent.llm_state import LLMToolTrace, NaturalLanguageRunResult
+from rsfusion_agent.agent.llm_tools import AgentToolbox
+
+SYSTEM_INSTRUCTIONS = """You are the control plane for RSFusionAgent.
+Use only the supplied function tools. Never claim a file was inspected or a model was run
+unless the corresponding tool returned ok=true. For an inference request, first call
+inspect_yre151_h5, then run_yre151_fusion, and finally summarize the returned metrics and
+artifact names. Do not request or manipulate image arrays. The CLI has already authorized
+exactly one patch index; use that configured index. If a tool returns an error, explain it
+or choose a safe recovery tool. Answer in the user's language.
+"""
+
+
+class LLMFusionAgent:
+    """Run a bounded Responses API function-calling loop."""
+
+    def __init__(
+        self,
+        *,
+        client: ResponsesClient,
+        toolbox: AgentToolbox,
+        max_turns: int = 6,
+    ) -> None:
+        if max_turns < 1:
+            raise ValueError("max_turns must be at least 1")
+        self.client = client
+        self.toolbox = toolbox
+        self.max_turns = max_turns
+
+    def run(self, request: str) -> NaturalLanguageRunResult:
+        if not request.strip():
+            raise ValueError("Natural-language request must not be empty")
+
+        input_items: list[Any] = [{"role": "user", "content": request}]
+        trace: list[LLMToolTrace] = []
+        seen_call_ids: set[str] = set()
+
+        for round_index in range(1, self.max_turns + 1):
+            turn = self.client.respond(
+                input_items=input_items,
+                tools=self.toolbox.definitions(),
+                instructions=SYSTEM_INSTRUCTIONS,
+            )
+            input_items.extend(turn.output_items)
+
+            if not turn.tool_calls:
+                answer = turn.output_text.strip()
+                if not answer:
+                    raise RuntimeError("The model returned neither text nor function calls")
+                status = (
+                    "completed_with_tool_errors"
+                    if any(item.status == "failed" for item in trace)
+                    else "completed"
+                )
+                return NaturalLanguageRunResult(
+                    status=status,
+                    model=self.client.model,
+                    request=request,
+                    answer=answer,
+                    turns=round_index,
+                    trace=trace,
+                    fusion_result=self.toolbox.latest_result,
+                )
+
+            for call in turn.tool_calls:
+                if not call.call_id or call.call_id in seen_call_ids:
+                    raise RuntimeError(f"Invalid or duplicate function call id: {call.call_id!r}")
+                seen_call_ids.add(call.call_id)
+                started_at = time.perf_counter()
+                try:
+                    output = self.toolbox.execute(call.name, call.arguments)
+                    status = "completed"
+                except Exception as exc:
+                    output = self.toolbox.sanitize_error(exc)
+                    status = "failed"
+                trace.append(
+                    LLMToolTrace(
+                        round_index=round_index,
+                        call_id=call.call_id,
+                        name=call.name,
+                        arguments=call.arguments,
+                        status=status,
+                        elapsed_seconds=time.perf_counter() - started_at,
+                        output=output,
+                    )
+                )
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(output, ensure_ascii=False),
+                    }
+                )
+
+        raise RuntimeError(f"LLM tool loop exceeded the {self.max_turns}-turn limit")

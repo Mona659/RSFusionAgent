@@ -1,0 +1,165 @@
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from rsfusion_agent.agent.llm_client import FunctionCall, ModelTurn, OpenAIResponsesClient
+from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
+from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
+
+
+class FakeResponsesClient:
+    model = "fake-tool-model"
+
+    def __init__(self, turns: list[ModelTurn]) -> None:
+        self.turns = turns
+        self.inputs: list[list[Any]] = []
+
+    def respond(self, **kwargs: Any) -> ModelTurn:
+        self.inputs.append(list(kwargs["input_items"]))
+        return self.turns.pop(0)
+
+
+class FakeToolbox:
+    latest_result = None
+
+    def __init__(self, *, fail_run: bool = False) -> None:
+        self.fail_run = fail_run
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    @staticmethod
+    def definitions() -> list[dict[str, Any]]:
+        return []
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((name, arguments))
+        if name == "run_yre151_fusion" and self.fail_run:
+            raise RuntimeError("synthetic runtime failure")
+        return {"ok": True, "tool": name}
+
+    @staticmethod
+    def sanitize_error(error: Exception) -> dict[str, Any]:
+        return {"ok": False, "error_type": type(error).__name__, "error": str(error)}
+
+
+def _tool_turn(response_id: str, call_id: str, name: str) -> ModelTurn:
+    arguments = {"patch_index": 0}
+    return ModelTurn(
+        response_id=response_id,
+        output_items=[
+            {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": '{"patch_index": 0}',
+            }
+        ],
+        tool_calls=[FunctionCall(call_id=call_id, name=name, arguments=arguments)],
+    )
+
+
+def test_llm_agent_runs_inspect_then_inference_then_answers() -> None:
+    client = FakeResponsesClient(
+        [
+            _tool_turn("response-1", "call-1", "inspect_yre151_h5"),
+            _tool_turn("response-2", "call-2", "run_yre151_fusion"),
+            ModelTurn(response_id="response-3", output_text="融合完成。"),
+        ]
+    )
+    toolbox = FakeToolbox()
+
+    result = LLMFusionAgent(client=client, toolbox=toolbox).run("检查后融合第 0 个 patch")
+
+    assert result.status == "completed"
+    assert result.answer == "融合完成。"
+    assert result.turns == 3
+    assert [item.name for item in result.trace] == [
+        "inspect_yre151_h5",
+        "run_yre151_fusion",
+    ]
+    assert all(item.status == "completed" for item in result.trace)
+    assert client.inputs[1][-1]["type"] == "function_call_output"
+    assert client.inputs[1][-1]["call_id"] == "call-1"
+
+
+def test_llm_agent_returns_tool_error_to_model() -> None:
+    client = FakeResponsesClient(
+        [
+            _tool_turn("response-1", "call-1", "run_yre151_fusion"),
+            ModelTurn(response_id="response-2", output_text="模型运行失败，请检查环境。"),
+        ]
+    )
+    toolbox = FakeToolbox(fail_run=True)
+
+    result = LLMFusionAgent(client=client, toolbox=toolbox).run("运行融合")
+
+    assert result.status == "completed_with_tool_errors"
+    assert result.trace[0].status == "failed"
+    assert "synthetic runtime failure" in client.inputs[1][-1]["output"]
+
+
+def test_toolbox_blocks_inference_before_inspection(tmp_path: Path) -> None:
+    context = LLMToolContext(
+        auxiliary_h5_path=tmp_path / "aux.h5",
+        target_h5_path=tmp_path / "target.h5",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "python.exe",
+        output_dir=tmp_path / "output",
+        patch_index=0,
+    )
+    toolbox = AgentToolbox(context)
+
+    with pytest.raises(ValueError, match="Safety gate"):
+        toolbox.execute("run_yre151_fusion", {"patch_index": 0})
+
+
+def test_toolbox_redacts_configured_paths_from_errors(tmp_path: Path) -> None:
+    auxiliary_path = tmp_path / "private" / "aux.h5"
+    toolbox = AgentToolbox(
+        LLMToolContext(
+            auxiliary_h5_path=auxiliary_path,
+            target_h5_path=tmp_path / "target.h5",
+            checkpoint_path=tmp_path / "model.pth",
+            model_python=tmp_path / "python.exe",
+            output_dir=tmp_path / "output",
+        )
+    )
+
+    output = toolbox.sanitize_error(FileNotFoundError(f"Missing {auxiliary_path}"))
+
+    assert str(auxiliary_path) not in output["error"]
+    assert "<auxiliary_h5_path>" in output["error"]
+
+
+def test_openai_adapter_normalizes_function_calls_without_network() -> None:
+    class FakeResponsesAPI:
+        def __init__(self) -> None:
+            self.kwargs: dict[str, Any] = {}
+
+        def create(self, **kwargs: Any) -> SimpleNamespace:
+            self.kwargs = kwargs
+            item = SimpleNamespace(
+                type="function_call",
+                call_id="call-1",
+                name="inspect_yre151_h5",
+                arguments='{"patch_index": 0}',
+            )
+            return SimpleNamespace(id="response-1", output_text="", output=[item])
+
+    responses_api = FakeResponsesAPI()
+    client = OpenAIResponsesClient.__new__(OpenAIResponsesClient)
+    client.model = "fake-openai-model"
+    client._client = SimpleNamespace(responses=responses_api)
+
+    turn = client.respond(
+        input_items=[{"role": "user", "content": "检查数据"}],
+        tools=[],
+        instructions="Use tools.",
+    )
+
+    assert turn.tool_calls[0].name == "inspect_yre151_h5"
+    assert turn.tool_calls[0].arguments == {"patch_index": 0}
+    assert responses_api.kwargs["store"] is False
+    assert responses_api.kwargs["parallel_tool_calls"] is False
+    assert responses_api.kwargs["include"] == ["reasoning.encrypted_content"]

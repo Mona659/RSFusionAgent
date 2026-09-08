@@ -83,7 +83,8 @@ known legacy limitations.
 - [ ] Accept three original TIFF inputs
 - [ ] Validate pre-registration and geospatial alignment
 - [ ] Perform overlapping whole-scene inference and weighted stitching
-- [ ] Add optional LLM planning and solution retrieval
+- [x] Add optional LLM planning with strict function tools
+- [ ] Add solution retrieval and experiment memory
 - [ ] Add a Gradio interface
 
 ## Project structure
@@ -98,6 +99,10 @@ RSFusionAgent/
 │   └── data_contract.md
 ├── src/rsfusion_agent/
 │   ├── agent/
+│   │   ├── llm_client.py
+│   │   ├── llm_state.py
+│   │   ├── llm_tools.py
+│   │   ├── llm_workflow.py
 │   │   ├── state.py
 │   │   └── workflow.py
 │   ├── models/
@@ -126,6 +131,12 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+```
+
+Install the optional natural-language control plane with:
+
+```powershell
+python -m pip install -e ".[dev,llm]"
 ```
 
 The neural network runs in a separate existing Python environment containing a
@@ -192,6 +203,42 @@ V1 intentionally reproduces the legacy TIFF convention: normalized `float32`
 values, a synthetic transform and no CRS. This is recorded as a warning in the run
 manifest. A future raw-TIFF adapter will preserve target-MS geospatial metadata.
 
+## Run the natural-language agent (optional)
+
+V0.2 implements the standard
+[OpenAI Responses API function-calling loop](https://developers.openai.com/api/docs/guides/function-calling).
+The LLM can select only three strict-schema tools: inspect the configured HDF5 pair,
+run one configured patch, and read the latest result. Local paths cannot be supplied
+or changed by the model.
+
+Set credentials in the current terminal. Do not put a real key in source code,
+`.env.example`, CLI arguments or Git history:
+
+```powershell
+$env:OPENAI_API_KEY = "your-api-key"
+$env:OPENAI_MODEL = "gpt-5.4-mini"
+```
+
+Then reuse the local path variables from the inference example:
+
+```powershell
+rsfusion agent `
+  --request "请先检查数据，再融合第 0 个 patch，并汇报指标和输出文件" `
+  --aux-h5 $auxH5 `
+  --target-h5 $targetH5 `
+  --checkpoint $checkpoint `
+  --model-python $modelPython `
+  --patch-index 0 `
+  --device cuda `
+  --output-dir "outputs\llm_yre_patch_0001" `
+  --pretty
+```
+
+Only the user's text request plus sanitized file names, array shapes, scalar
+statistics, metrics and warnings are sent to the API. HDF5 pixels, NumPy arrays and
+checkpoint contents stay local. The complete design and safety boundaries are in
+[docs/llm_agent.md](docs/llm_agent.md).
+
 ## Tests
 
 ```powershell
@@ -204,6 +251,7 @@ python -m ruff check --no-cache src tests examples
 - Keep API keys and local runtime paths out of Git.
 - Load only trusted PyTorch checkpoints. PyTorch checkpoints can contain serialized data.
 - Output and intermediate model artifacts are ignored by Git.
+- LLM tools use an allowlist, strict arguments, a configured patch index and a bounded loop.
 
 ## License and attribution
 
