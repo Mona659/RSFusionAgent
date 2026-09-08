@@ -4,13 +4,21 @@ from typing import Any
 
 import pytest
 
-from rsfusion_agent.agent.llm_client import FunctionCall, ModelTurn, OpenAIResponsesClient
+from rsfusion_agent.agent.llm_client import (
+    FunctionCall,
+    ModelTurn,
+    OpenAIResponsesClient,
+    resolve_provider_settings,
+)
+from rsfusion_agent.agent.llm_state import LLMTokenUsage
 from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
+from rsfusion_agent.cli import _write_json_file
 
 
 class FakeResponsesClient:
     model = "fake-tool-model"
+    provider = "custom"
 
     def __init__(self, turns: list[ModelTurn]) -> None:
         self.turns = turns
@@ -99,6 +107,48 @@ def test_llm_agent_returns_tool_error_to_model() -> None:
     assert "synthetic runtime failure" in client.inputs[1][-1]["output"]
 
 
+def test_llm_agent_records_usage_and_qwen_cost_estimate() -> None:
+    client = FakeResponsesClient(
+        [
+            ModelTurn(
+                response_id="response-1",
+                output_text="融合完成。",
+                usage=LLMTokenUsage(input_tokens=12_000, output_tokens=2_000),
+            )
+        ]
+    )
+    client.provider = "qwen"
+    client.model = "qwen3.7-flash"
+
+    result = LLMFusionAgent(client=client, toolbox=FakeToolbox()).run("汇报结果")
+
+    assert result.usage.input_tokens == 12_000
+    assert result.usage.output_tokens == 2_000
+    assert result.model_trace[0].response_id == "response-1"
+    assert result.estimated_cost is not None
+    assert result.estimated_cost.currency == "CNY"
+    assert result.estimated_cost.estimated_cost == pytest.approx(0.004)
+
+
+def test_qwen_settings_accept_generic_environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RSFUSION_LLM_MODEL", "qwen3.7-flash")
+    monkeypatch.setenv("RSFUSION_LLM_BASE_URL", "https://example.invalid/v1")
+
+    settings = resolve_provider_settings(provider="qwen")
+
+    assert settings.provider == "qwen"
+    assert settings.model == "qwen3.7-flash"
+    assert settings.base_url == "https://example.invalid/v1"
+
+
+def test_write_json_file_uses_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "agent_result.json"
+
+    _write_json_file(path, {"answer": "融合完成。"}, indent=2)
+
+    assert path.read_text(encoding="utf-8") == '{\n  "answer": "融合完成。"\n}\n'
+
+
 def test_toolbox_blocks_inference_before_inspection(tmp_path: Path) -> None:
     context = LLMToolContext(
         auxiliary_h5_path=tmp_path / "aux.h5",
@@ -145,11 +195,18 @@ def test_openai_adapter_normalizes_function_calls_without_network() -> None:
                 name="inspect_yre151_h5",
                 arguments='{"patch_index": 0}',
             )
-            return SimpleNamespace(id="response-1", output_text="", output=[item])
+            usage = SimpleNamespace(
+                input_tokens=9,
+                output_tokens=4,
+                input_tokens_details=SimpleNamespace(cached_tokens=2),
+                output_tokens_details=SimpleNamespace(reasoning_tokens=1),
+            )
+            return SimpleNamespace(id="response-1", output_text="", output=[item], usage=usage)
 
     responses_api = FakeResponsesAPI()
     client = OpenAIResponsesClient.__new__(OpenAIResponsesClient)
     client.model = "fake-openai-model"
+    client.provider = "openai"
     client._client = SimpleNamespace(responses=responses_api)
 
     turn = client.respond(
@@ -163,3 +220,9 @@ def test_openai_adapter_normalizes_function_calls_without_network() -> None:
     assert responses_api.kwargs["store"] is False
     assert responses_api.kwargs["parallel_tool_calls"] is False
     assert responses_api.kwargs["include"] == ["reasoning.encrypted_content"]
+    assert turn.usage == LLMTokenUsage(
+        input_tokens=9,
+        output_tokens=4,
+        cached_input_tokens=2,
+        reasoning_tokens=1,
+    )

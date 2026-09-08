@@ -6,8 +6,13 @@ import json
 import time
 from typing import Any
 
-from rsfusion_agent.agent.llm_client import ResponsesClient
-from rsfusion_agent.agent.llm_state import LLMToolTrace, NaturalLanguageRunResult
+from rsfusion_agent.agent.llm_client import ResponsesClient, estimate_cost
+from rsfusion_agent.agent.llm_state import (
+    LLMModelTrace,
+    LLMTokenUsage,
+    LLMToolTrace,
+    NaturalLanguageRunResult,
+)
 from rsfusion_agent.agent.llm_tools import AgentToolbox
 
 SYSTEM_INSTRUCTIONS = """You are the control plane for RSFusionAgent.
@@ -40,8 +45,11 @@ class LLMFusionAgent:
         if not request.strip():
             raise ValueError("Natural-language request must not be empty")
 
+        provider = getattr(self.client, "provider", "custom")
         input_items: list[Any] = [{"role": "user", "content": request}]
         trace: list[LLMToolTrace] = []
+        model_trace: list[LLMModelTrace] = []
+        usage = LLMTokenUsage()
         seen_call_ids: set[str] = set()
 
         for round_index in range(1, self.max_turns + 1):
@@ -50,6 +58,15 @@ class LLMFusionAgent:
                 tools=self.toolbox.definitions(),
                 instructions=SYSTEM_INSTRUCTIONS,
             )
+            if turn.usage is not None:
+                usage = usage.combined_with(turn.usage)
+                model_trace.append(
+                    LLMModelTrace(
+                        round_index=round_index,
+                        response_id=turn.response_id,
+                        usage=turn.usage,
+                    )
+                )
             input_items.extend(turn.output_items)
 
             if not turn.tool_calls:
@@ -68,6 +85,14 @@ class LLMFusionAgent:
                     answer=answer,
                     turns=round_index,
                     trace=trace,
+                    provider=provider,
+                    usage=usage,
+                    model_trace=model_trace,
+                    estimated_cost=estimate_cost(
+                        provider=provider,
+                        model=self.client.model,
+                        usage=usage,
+                    ),
                     fusion_result=self.toolbox.latest_result,
                 )
 

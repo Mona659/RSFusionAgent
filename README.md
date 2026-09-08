@@ -211,19 +211,28 @@ The LLM can select only three strict-schema tools: inspect the configured HDF5 p
 run one configured patch, and read the latest result. Local paths cannot be supplied
 or changed by the model.
 
-Set credentials in the current terminal. Do not put a real key in source code,
+For the Qwen-compatible endpoint that you have already verified, set the generic
+provider variables in the current terminal. Do not put a real key in source code,
 `.env.example`, CLI arguments or Git history:
 
 ```powershell
-$env:OPENAI_API_KEY = "your-api-key"
-$env:OPENAI_MODEL = "gpt-5.4-mini"
+$env:RSFUSION_LLM_PROVIDER = "qwen"
+$env:RSFUSION_LLM_API_KEY = "your-api-key"
+$env:RSFUSION_LLM_BASE_URL = "https://<workspace-id>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+$env:RSFUSION_LLM_MODEL = "qwen3.7-flash"
 ```
+
+The CLI also supports `openai`, `deepseek`, and `custom` OpenAI-compatible
+providers. `DASHSCOPE_API_KEY`, `DEEPSEEK_API_KEY`, and `OPENAI_API_KEY` remain
+available as provider-specific fallbacks. The CLI intentionally does not load `.env`
+files automatically; this keeps secrets outside the repository.
 
 Then reuse the local path variables from the inference example:
 
 ```powershell
 rsfusion agent `
   --request "请先检查数据，再融合第 0 个 patch，并汇报指标和输出文件" `
+  --provider qwen `
   --aux-h5 $auxH5 `
   --target-h5 $targetH5 `
   --checkpoint $checkpoint `
@@ -238,6 +247,12 @@ Only the user's text request plus sanitized file names, array shapes, scalar
 statistics, metrics and warnings are sent to the API. HDF5 pixels, NumPy arrays and
 checkpoint contents stay local. The complete design and safety boundaries are in
 [docs/llm_agent.md](docs/llm_agent.md).
+
+Each successful `agent` invocation also saves its full control-plane record to
+`<output-dir>/agent_result.json`. It includes tool traces, provider/model metadata,
+per-turn and aggregated token usage, and a best-effort cost estimate when the model
+has a locally documented price rule. The estimate is for development observation only;
+the provider billing console is authoritative.
 
 ## Tests
 

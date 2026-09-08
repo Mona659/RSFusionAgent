@@ -1,8 +1,9 @@
 # LLM control plane
 
-RSFusionAgent V0.2 adds an optional natural-language control plane built on the
-OpenAI Responses API function-calling loop. The language model chooses from a small
-allowlist; NumPy arrays and raster pixels stay inside local deterministic tools.
+RSFusionAgent V0.2.1 adds an optional natural-language control plane built on an
+OpenAI-compatible Responses API function-calling loop. The language model chooses
+from a small allowlist; NumPy arrays and raster pixels stay inside local deterministic
+tools.
 
 ## Allowlisted tools
 
@@ -40,9 +41,34 @@ The loop is bounded by `--max-turns` and records tool call IDs, validated argume
 status, elapsed time and sanitized output. Tool failures are returned to the model so
 it can explain or safely recover.
 
+## Provider configuration and observability
+
+Use `--provider qwen` with the generic environment variables below for Model Studio's
+OpenAI-compatible endpoint. The model identifier and base URL may instead be supplied
+with the CLI flags of the same names.
+
+```powershell
+$env:RSFUSION_LLM_PROVIDER = "qwen"
+$env:RSFUSION_LLM_API_KEY = "your-api-key"
+$env:RSFUSION_LLM_BASE_URL = "https://<workspace-id>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+$env:RSFUSION_LLM_MODEL = "qwen3.7-flash"
+```
+
+The adapter also accepts `openai`, `deepseek`, and `custom` providers. For backwards
+compatibility, it falls back to `DASHSCOPE_API_KEY`, `DEEPSEEK_API_KEY`, or
+`OPENAI_API_KEY` as appropriate. API keys are environment-only: neither tool calls nor
+run artifacts expose them.
+
+Every completed run writes `<output-dir>/agent_result.json`. It records the provider,
+model, request, tool trace, model-response trace, normalized token totals, and a
+best-effort cost estimate when a local pricing rule exists. Cost estimates are not an
+invoice: confirm actual charges in the provider console, particularly when cache or
+long-context pricing applies.
+
 ## Security notes
 
-- Set `OPENAI_API_KEY` in the environment; never put it in CLI arguments or Git.
+- Set `RSFUSION_LLM_API_KEY` (or a provider-specific fallback) in the environment;
+  never put it in CLI arguments or Git.
 - Only load trusted PyTorch checkpoints.
 - Treat the natural-language layer as a control plane, not a numerical compute layer.
 - Review the configured paths and patch index before starting a paid API request.

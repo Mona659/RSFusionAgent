@@ -9,13 +9,34 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from rsfusion_agent.agent.llm_client import OpenAIResponsesClient
+from rsfusion_agent.agent.llm_client import (
+    CompatibleResponsesClient,
+    resolve_provider_settings,
+)
 from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.agent.state import FusionRunRequest
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.h5_patch import inspect_h5_pair
 from rsfusion_agent.tools.raster_inspector import inspect_raster
+
+
+def _emit_json(payload: dict, *, indent: int | None) -> None:
+    """Write JSON to stdout as UTF-8 so Windows GBK consoles do not crash on emoji."""
+    text = json.dumps(payload, ensure_ascii=False, indent=indent)
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(text.encode("utf-8"))
+        buffer.write(b"\n")
+        buffer.flush()
+        return
+    print(text)
+
+
+def _write_json_file(path: Path, payload: dict, *, indent: int | None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=indent)
+    path.write_text(f"{text}\n", encoding="utf-8")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,14 +101,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Python executable from an environment containing compatible PyTorch.",
     )
     agent_parser.add_argument(
+        "--provider",
+        choices=("openai", "qwen", "deepseek", "custom"),
+        default=os.environ.get("RSFUSION_LLM_PROVIDER", "openai"),
+        help="LLM provider used through an OpenAI-compatible Responses API.",
+    )
+    agent_parser.add_argument(
         "--llm-model",
-        default=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
-        help="OpenAI model with Responses API function-calling support.",
+        default=None,
+        help="Provider model ID. Defaults to RSFUSION_LLM_MODEL, OPENAI_MODEL, or provider default.",
     )
     agent_parser.add_argument(
         "--base-url",
-        default=os.environ.get("OPENAI_BASE_URL") or None,
-        help="Optional OpenAI-compatible API base URL.",
+        default=None,
+        help="Provider base URL. Defaults to RSFUSION_LLM_BASE_URL or OPENAI_BASE_URL.",
     )
     agent_parser.add_argument("--max-turns", type=int, default=6)
     agent_parser.add_argument("--timeout", type=int, default=600)
@@ -106,7 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
 
         indent = 2 if args.pretty else None
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=indent))
+        _emit_json(result.model_dump(mode="json"), indent=indent)
         return 0
 
     if args.command == "inspect-h5":
@@ -119,7 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (FileNotFoundError, IndexError, TypeError, ValueError) as exc:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=indent))
+        _emit_json(result.model_dump(mode="json"), indent=indent)
         return 0
 
     if args.command == "infer-h5":
@@ -138,7 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (FileNotFoundError, IndexError, RuntimeError, TypeError, ValueError) as exc:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=indent))
+        _emit_json(result.model_dump(mode="json"), indent=indent)
         return 0
 
     if args.command == "agent":
@@ -153,9 +180,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 device=args.device,
                 timeout_seconds=args.timeout,
             )
-            client = OpenAIResponsesClient(
+            settings = resolve_provider_settings(
+                provider=args.provider,
                 model=args.llm_model,
                 base_url=args.base_url,
+            )
+            client = CompatibleResponsesClient(
+                provider=settings.provider,
+                model=settings.model,
+                base_url=settings.base_url,
             )
             result = LLMFusionAgent(
                 client=client,
@@ -165,7 +198,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as exc:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
-        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=indent))
+        payload = result.model_dump(mode="json")
+        _write_json_file(Path(args.output_dir) / "agent_result.json", payload, indent=indent)
+        _emit_json(payload, indent=indent)
         return 0
 
     parser.error(f"Unsupported command: {args.command}")
