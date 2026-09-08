@@ -9,11 +9,18 @@ from typing import Any
 import numpy as np
 import rasterio
 from PIL import Image
+from rasterio import Affine
 from rasterio.transform import from_origin
 
 
-def save_prediction_tiff(prediction: np.ndarray, output_path: str | Path) -> Path:
-    """Save normalized CHW float32 data using the legacy synthetic transform."""
+def save_prediction_tiff(
+    prediction: np.ndarray,
+    output_path: str | Path,
+    *,
+    transform: Affine | None = None,
+    crs: str | None = None,
+) -> Path:
+    """Save normalized CHW float32 data with optional source georeferencing."""
 
     array = np.asarray(prediction, dtype=np.float32)
     if array.ndim != 3:
@@ -29,7 +36,8 @@ def save_prediction_tiff(prediction: np.ndarray, output_path: str | Path) -> Pat
         width=width,
         count=bands,
         dtype="float32",
-        transform=from_origin(0, 0, 1, 1),
+        transform=transform or from_origin(0, 0, 1, 1),
+        crs=crs,
     ) as dataset:
         dataset.write(array)
     return path
@@ -108,4 +116,3 @@ def write_json(data: Any, output_path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
-

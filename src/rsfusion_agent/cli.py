@@ -16,6 +16,7 @@ from rsfusion_agent.agent.llm_client import (
 from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.agent.state import FusionRunRequest
+from rsfusion_agent.agent.tiff_workflow import TiffFusionRequest, YRE151TiffPatchAgent
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.h5_patch import inspect_h5_pair
 from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
@@ -128,6 +129,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extra retries for known native model-process crashes.",
     )
     infer_parser.add_argument("--pretty", action="store_true")
+
+    infer_tiff_parser = subparsers.add_parser(
+        "infer-tiff",
+        help="Run one metadata-validated raw-TIFF YRE-151 crop without reference metrics.",
+    )
+    infer_tiff_parser.add_argument("--aux-ms", required=True)
+    infer_tiff_parser.add_argument("--aux-hs", required=True)
+    infer_tiff_parser.add_argument("--target-ms", required=True)
+    infer_tiff_parser.add_argument("--checkpoint", required=True)
+    infer_tiff_parser.add_argument("--output-dir", required=True)
+    infer_tiff_parser.add_argument("--patch-size", type=int, default=180)
+    infer_tiff_parser.add_argument("--row-offset", type=int, default=0)
+    infer_tiff_parser.add_argument("--col-offset", type=int, default=0)
+    infer_tiff_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    infer_tiff_parser.add_argument(
+        "--model-python",
+        default=os.environ.get("RSFUSION_MODEL_PYTHON", sys.executable),
+    )
+    infer_tiff_parser.add_argument("--timeout", type=int, default=600)
+    infer_tiff_parser.add_argument("--runtime-retries", type=int, choices=(0, 1, 2), default=1)
+    infer_tiff_parser.add_argument("--pretty", action="store_true")
 
     agent_parser = subparsers.add_parser(
         "agent",
@@ -253,6 +275,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             result = YRE151PatchAgent().run(request)
         except (FileNotFoundError, IndexError, RuntimeError, TypeError, ValueError) as exc:
+            parser.error(str(exc))
+        indent = 2 if args.pretty else None
+        _emit_json(result.model_dump(mode="json"), indent=indent)
+        return 0
+
+    if args.command == "infer-tiff":
+        try:
+            result = YRE151TiffPatchAgent().run(
+                TiffFusionRequest(
+                    auxiliary_ms_path=Path(args.aux_ms),
+                    auxiliary_hs_path=Path(args.aux_hs),
+                    target_ms_path=Path(args.target_ms),
+                    checkpoint_path=Path(args.checkpoint),
+                    model_python=Path(args.model_python),
+                    output_dir=Path(args.output_dir),
+                    patch_size=args.patch_size,
+                    row_offset=args.row_offset,
+                    col_offset=args.col_offset,
+                    device=args.device,
+                    timeout_seconds=args.timeout,
+                    runtime_retries=args.runtime_retries,
+                )
+            )
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
         _emit_json(result.model_dump(mode="json"), indent=indent)

@@ -82,12 +82,24 @@ It accepts `auxiliary_ms`, `auxiliary_hs`, and `target_ms` TIFF files and expect
 | Grid | Auxiliary and target MS have equal dimensions/resolution | Width, height, and resolution differ by exactly scale 3 |
 
 It returns `is_ready_for_preprocessing`, `blocking_issues`, and non-blocking warnings.
-It intentionally does not inspect pixel registration, normalize reflectance, create HDF5,
-or execute inference.
+It intentionally does not inspect pixel registration or create HDF5.
+
+## Raw-TIFF single-patch inference (V0.7)
+
+`rsfusion infer-tiff` uses the same preflight and then accepts one high-resolution
+target-MS window. The MS windows have shape `[4, 180, 180]`; its corresponding
+auxiliary-HS window has shape `[151, 60, 60]` and is bilinearly upsampled to
+`[151, 180, 180]`, matching the historical `Database.py` input preparation.
+
+The runtime input remains the existing normalized NPZ handoff, rather than a new HDF5
+schema. This keeps the isolated DC-STSF runtime shared with the already verified HDF5
+route. The output `predicted_hs.tif` inherits CRS and the window transform from target
+MS. Because the input contract has no target-time HS reference, no full-reference metrics
+or SAM heatmap can be produced.
 
 ## Explicitly unsupported in V1
 
-- TIFF-to-HDF5 conversion and raw-TIFF inference
+- TIFF-to-HDF5 conversion
 - Registration or reprojection
 - Real/full-resolution `RealT*YRE.h5` profile
 - 100-band HZW profile

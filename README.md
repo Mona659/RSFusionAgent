@@ -5,9 +5,9 @@
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
 > **V1 scope:** YRE reduced-resolution profile, 151 HS bands, preprocessed HDF5
-> inputs and one test patch. V0.6 additionally validates a future raw-TIFF input
-> triplet at metadata level; conversion and whole-scene stitching are reserved for
-> later versions.
+> inputs and one test patch. V0.7 additionally supports direct inference for one
+> metadata-validated raw-TIFF triplet crop. TIFF-to-HDF5 conversion and whole-scene
+> stitching are reserved for later versions.
 
 ## What V1 does
 
@@ -105,6 +105,7 @@ known legacy limitations.
 - [x] Save machine-readable metrics, tool trace and Markdown report
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
 - [x] Validate three original TIFF inputs before preprocessing (metadata only)
+- [x] Run one aligned raw-TIFF crop and preserve target-MS georeferencing in output
 - [ ] Convert TIFF triplet to the legacy HDF5 profile
 - [ ] Validate pixel-level registration and geospatial alignment
 - [ ] Perform overlapping whole-scene inference and weighted stitching
@@ -237,6 +238,35 @@ rsfusion inspect-tiff-triplet `
 Use `is_ready_for_preprocessing: true` as the prerequisite for the later TIFF-to-HDF5
 adapter. Any `blocking_issues` must be fixed in the source data; this project does not
 silently alter spatial data.
+
+## Run one raw-TIFF crop (no reference metrics)
+
+The current raw-TIFF route reproduces the legacy input preparation: it reads an aligned
+MS window, reads the corresponding low-resolution auxiliary HS window, bilinearly
+upsamples it by 3, normalizes by `10000`, and invokes the same DC-STSF runtime. It saves
+a georeferenced `predicted_hs.tif` using the target-MS crop transform and CRS.
+
+```powershell
+$checkpoint = "C:\\path\\to\\checkpoints\\model-epochs200.pth"
+$modelPython = "C:\\path\\to\\model-env\\Scripts\\python.exe"
+
+rsfusion infer-tiff `
+  --aux-ms $auxMsTif `
+  --aux-hs $auxHsTif `
+  --target-ms $targetMsTif `
+  --checkpoint $checkpoint `
+  --model-python $modelPython `
+  --patch-size 180 `
+  --row-offset 0 `
+  --col-offset 0 `
+  --device cuda `
+  --output-dir "outputs\\tiff_patch_0001" `
+  --pretty
+```
+
+`row-offset` and `col-offset` are high-resolution MS pixel offsets and must be divisible
+by 3. The raw-TIFF route requires only `T1 MS + T1 HS + T2 MS`; as it has no T2 HS
+reference, full-reference metrics and the SAM heatmap are intentionally unavailable.
 
 ## Run V1 inference
 
