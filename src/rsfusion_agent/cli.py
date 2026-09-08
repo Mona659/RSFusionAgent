@@ -106,6 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Python executable from an environment containing compatible PyTorch.",
     )
     infer_parser.add_argument("--timeout", type=int, default=600)
+    infer_parser.add_argument(
+        "--runtime-retries",
+        type=int,
+        choices=(0, 1, 2),
+        default=1,
+        help="Extra retries for known native model-process crashes.",
+    )
     infer_parser.add_argument("--pretty", action="store_true")
 
     agent_parser = subparsers.add_parser(
@@ -142,6 +149,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_parser.add_argument("--max-turns", type=int, default=6)
     agent_parser.add_argument("--timeout", type=int, default=600)
+    agent_parser.add_argument(
+        "--runtime-retries",
+        type=int,
+        choices=(0, 1, 2),
+        default=1,
+        help="Extra retries for known native model-process crashes.",
+    )
     agent_parser.add_argument(
         "--preflight-timeout",
         type=int,
@@ -204,6 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 patch_index=args.patch_index,
                 device=args.device,
                 timeout_seconds=args.timeout,
+                runtime_retries=args.runtime_retries,
             )
             result = YRE151PatchAgent().run(request)
         except (FileNotFoundError, IndexError, RuntimeError, TypeError, ValueError) as exc:
@@ -223,6 +238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 patch_index=args.patch_index,
                 device=args.device,
                 timeout_seconds=args.timeout,
+                runtime_retries=args.runtime_retries,
             )
             runtime_preflight = None
             if not args.skip_preflight:

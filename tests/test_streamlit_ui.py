@@ -3,6 +3,8 @@ from pathlib import Path
 from rsfusion_agent.ui.streamlit_app import (
     UiRunConfig,
     build_agent_command,
+    format_history_label,
+    list_run_history,
     load_json_object,
     resolve_result_artifact,
 )
@@ -29,6 +31,7 @@ def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Pat
     assert "--provider" in command
     assert command[command.index("--provider") + 1] == "qwen"
     assert "--skip-preflight" not in command
+    assert command[command.index("--runtime-retries") + 1] == "1"
     assert not any("api-key" in item.lower() or "api_key" in item.lower() for item in command)
 
 
@@ -66,3 +69,24 @@ def test_resolve_result_artifact_supports_full_workflow_paths_and_stays_in_outpu
         )
         is None
     )
+
+
+def test_list_run_history_loads_results_without_running_the_agent(tmp_path: Path) -> None:
+    root = tmp_path / "ui_runs"
+    successful = root / "successful"
+    failed = root / "failed"
+    successful.mkdir(parents=True)
+    failed.mkdir()
+    (successful / "agent_result.json").write_text(
+        '{"status": "completed", "fusion_result": {"metrics": {"psnr": 32.0}}}',
+        encoding="utf-8",
+    )
+    (failed / "agent_result.json").write_text(
+        '{"status": "completed_with_tool_errors"}',
+        encoding="utf-8",
+    )
+
+    history = list_run_history(root)
+
+    assert {item.status for item in history} == {"completed", "completed_with_tool_errors"}
+    assert any("PSNR 32.000" in format_history_label(item) for item in history)

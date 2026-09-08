@@ -95,6 +95,7 @@ class YRE151PatchAgent:
                 model_python=request.model_python,
                 device=request.device,
                 timeout_seconds=request.timeout_seconds,
+                retry_count=request.runtime_retries,
             ),
         )
 

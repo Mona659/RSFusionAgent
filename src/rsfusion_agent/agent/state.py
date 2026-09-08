@@ -20,6 +20,7 @@ class FusionRunRequest(BaseModel):
     patch_index: int = Field(default=0, ge=0)
     device: str = "auto"
     timeout_seconds: int = Field(default=600, gt=0)
+    runtime_retries: int = Field(default=1, ge=0, le=2)
     rgb_bands: tuple[int, int, int] = (28, 18, 9)
 
 
@@ -44,4 +45,3 @@ class FusionRunResult(BaseModel):
     report_path: str
     trace: list[ToolTrace]
     warnings: list[str]
-

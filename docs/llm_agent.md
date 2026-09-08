@@ -94,6 +94,21 @@ it does not contain an alternate inference path or accept API keys in the browse
 It displays preflight status, tool calls, token/cost estimates, metrics, and local
 preview artifacts from the generated result directory.
 
+## Failure handling and local history
+
+The local tools classify sanitized failures into configuration, data-validation,
+CUDA-environment, native-runtime, timeout, LLM-configuration, or unknown categories.
+The model sees only that category, a short recommendation and a path-redacted message.
+
+The first observed Windows native fast-fail (`0xC0000409`) can be retried once after
+the subprocess exits. This is controlled by `--runtime-retries` (default `1`, range
+`0` to `2`) and is intentionally limited to that known native exit code. The runtime
+result records `attempt_count` and `retried_exit_codes`; all other errors require a
+human configuration fix rather than an automatic retry.
+
+The Streamlit page can load a prior `agent_result.json` directly from the configured
+output root. Loading history is read-only and does not send another API request.
+
 ## Security notes
 
 - Set `RSFUSION_LLM_API_KEY` (or a provider-specific fallback) in the environment;

@@ -294,6 +294,14 @@ key remains in the terminal environment. It invokes the existing `rsfusion agent
 workflow, so the runtime preflight, tool allowlist, output isolation and result JSON
 records remain active.
 
+V0.4 adds a local run-history selector: reopen an existing `agent_result.json` from
+the configured output root without calling the LLM again. The UI and CLI also default
+to one extra retry only for the known Windows native fast-fail exit code `0xC0000409`.
+Every retry is recorded in the runtime result as `attempt_count` and
+`retried_exit_codes`. Set `--runtime-retries 0` to disable it, or at most `2` for
+troubleshooting. Path, CUDA, H5 validation and timeout failures are never retried
+blindly; the Agent receives a safe error category and recommended action instead.
+
 ## Tests
 
 ```powershell

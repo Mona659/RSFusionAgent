@@ -29,6 +29,7 @@ class UiRunConfig:
     device: str = "cuda"
     timeout_seconds: int = 600
     preflight_timeout_seconds: int = 60
+    runtime_retries: int = 1
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,16 @@ class UiAgentExecution:
     stderr: str
     result_path: Path
     result: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class UiRunHistoryItem:
+    """One locally persisted agent result available for display without a rerun."""
+
+    output_dir: Path
+    status: str
+    created_at: datetime
+    psnr: float | None
 
 
 def build_agent_command(config: UiRunConfig, *, python_executable: str | None = None) -> list[str]:
@@ -72,6 +83,8 @@ def build_agent_command(config: UiRunConfig, *, python_executable: str | None = 
         str(config.timeout_seconds),
         "--preflight-timeout",
         str(config.preflight_timeout_seconds),
+        "--runtime-retries",
+        str(config.runtime_retries),
         "--pretty",
     ]
     if config.llm_model:
@@ -91,6 +104,35 @@ def load_json_object(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def list_run_history(output_root: Path, *, limit: int = 20) -> list[UiRunHistoryItem]:
+    """List direct child run directories containing persisted agent results."""
+
+    root = output_root.expanduser().resolve()
+    if not root.is_dir() or limit < 1:
+        return []
+    items: list[UiRunHistoryItem] = []
+    for result_path in root.glob("*/agent_result.json"):
+        result = load_json_object(result_path)
+        if result is None:
+            continue
+        metrics = ((result.get("fusion_result") or {}).get("metrics") or {})
+        psnr = metrics.get("psnr")
+        items.append(
+            UiRunHistoryItem(
+                output_dir=result_path.parent,
+                status=str(result.get("status", "unknown")),
+                created_at=datetime.fromtimestamp(result_path.stat().st_mtime),
+                psnr=float(psnr) if isinstance(psnr, (int, float)) else None,
+            )
+        )
+    return sorted(items, key=lambda item: item.created_at, reverse=True)[:limit]
+
+
+def format_history_label(item: UiRunHistoryItem) -> str:
+    metric = f" · PSNR {item.psnr:.3f}" if item.psnr is not None else ""
+    return f"{item.created_at:%Y-%m-%d %H:%M:%S} · {item.status}{metric}"
 
 
 def resolve_result_artifact(
@@ -160,6 +202,7 @@ def _build_config(st: Any) -> UiRunConfig:
         patch_index = st.number_input("Patch Index", min_value=0, value=0, step=1)
         timeout_seconds = st.number_input("融合超时（秒）", min_value=30, value=600, step=30)
         preflight_timeout = st.number_input("预检超时（秒）", min_value=10, value=60, step=10)
+        runtime_retries = st.selectbox("原生崩溃额外重试次数", (0, 1, 2), index=1)
 
     request = st.text_area(
         "自然语言任务",
@@ -181,6 +224,7 @@ def _build_config(st: Any) -> UiRunConfig:
         device=device,
         timeout_seconds=int(timeout_seconds),
         preflight_timeout_seconds=int(preflight_timeout),
+        runtime_retries=int(runtime_retries),
     )
 
 
@@ -210,6 +254,12 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         st.success("Agent 已完成融合任务。")
     else:
         st.warning(f"Agent 已结束，状态：{status}")
+        for item in reversed(result.get("trace") or []):
+            diagnosis = (item.get("output") or {}).get("diagnosis")
+            if diagnosis:
+                st.error(diagnosis.get("summary", "Agent 工具执行失败。"))
+                st.caption(f"建议：{diagnosis.get('recommended_action', '')}")
+                break
 
     _render_preflight(st, result.get("runtime_preflight"))
     fusion = result.get("fusion_result") or {}
@@ -220,6 +270,13 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         columns[0].metric("PSNR", f"{metrics.get('psnr', 0):.4f}")
         columns[1].metric("SAM", f"{metrics.get('sam', 0):.4f}")
         columns[2].metric("SSIM", f"{metrics.get('ssim', 0):.4f}")
+
+    runtime = fusion.get("runtime") or {}
+    if runtime.get("attempt_count", 1) > 1:
+        st.info(
+            "模型进程已在第 "
+            f"{runtime['attempt_count']} 次尝试成功；重试退出码：{runtime.get('retried_exit_codes', [])}"
+        )
 
     st.subheader("Agent 调用记录")
     trace = result.get("trace") or []
@@ -268,6 +325,29 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         st.json(result)
 
 
+def _render_history_selector(st: Any, output_root: Path) -> None:
+    history = list_run_history(output_root)
+    with st.sidebar:
+        st.divider()
+        st.subheader("本地运行历史")
+        if not history:
+            st.caption("当前输出根目录下尚无 agent_result.json。")
+            return
+        selected = st.selectbox("选择历史运行", history, format_func=format_history_label)
+        if st.button("加载历史结果", use_container_width=True):
+            result_path = selected.output_dir / "agent_result.json"
+            result = load_json_object(result_path)
+            if result is not None:
+                st.session_state["ui_execution"] = UiAgentExecution(
+                    return_code=0,
+                    stdout="",
+                    stderr="",
+                    result_path=result_path,
+                    result=result,
+                )
+                st.session_state["ui_output_dir"] = selected.output_dir
+
+
 def run_app() -> None:
     """Render the Streamlit page without importing Streamlit during unit tests."""
 
@@ -280,6 +360,7 @@ def run_app() -> None:
     st.title("RSFusionAgent · 遥感图像融合 Agent")
     st.caption("本地运行：H5 数据与模型权重不会上传；API Key 仅从终端环境变量读取。")
     config = _build_config(st)
+    _render_history_selector(st, config.output_dir.parent)
 
     preflight_col, run_col = st.columns(2)
     if preflight_col.button("预检模型环境", use_container_width=True):

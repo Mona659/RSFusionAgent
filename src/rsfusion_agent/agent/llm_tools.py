@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rsfusion_agent.agent.state import FusionRunRequest, FusionRunResult
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
+from rsfusion_agent.tools.error_diagnosis import diagnose_error
 from rsfusion_agent.tools.h5_patch import H5PairInspection, inspect_h5_pair
 
 
@@ -22,6 +23,7 @@ class LLMToolContext(BaseModel):
     patch_index: int = Field(default=0, ge=0)
     device: str = "auto"
     timeout_seconds: int = Field(default=600, gt=0)
+    runtime_retries: int = Field(default=1, ge=0, le=2)
 
 
 class PatchIndexArguments(BaseModel):
@@ -125,6 +127,7 @@ class AgentToolbox:
                     patch_index=parsed.patch_index,
                     device=self.context.device,
                     timeout_seconds=self.context.timeout_seconds,
+                    runtime_retries=self.context.runtime_retries,
                 )
             )
             self.latest_result = result
@@ -155,10 +158,12 @@ class AgentToolbox:
             for candidate in {raw_path, resolved_path, raw_path.replace("\\", "/")}:
                 if candidate:
                     message = message.replace(candidate, f"<{label}>")
+        diagnosis = diagnose_error(error)
         return {
             "ok": False,
             "error_type": type(error).__name__,
             "error": message,
+            "diagnosis": diagnosis.model_dump(mode="json"),
         }
 
     def _require_configured_patch(self, patch_index: int) -> None:

@@ -245,6 +245,7 @@ def test_toolbox_redacts_configured_paths_from_errors(tmp_path: Path) -> None:
 
     assert str(auxiliary_path) not in output["error"]
     assert "<auxiliary_h5_path>" in output["error"]
+    assert output["diagnosis"]["category"] == "configuration"
 
 
 def test_openai_adapter_normalizes_function_calls_without_network() -> None:
