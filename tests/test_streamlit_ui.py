@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from rsfusion_agent.ui.streamlit_app import UiRunConfig, build_agent_command, load_json_object
+from rsfusion_agent.ui.streamlit_app import (
+    UiRunConfig,
+    build_agent_command,
+    load_json_object,
+    resolve_result_artifact,
+)
 
 
 def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Path) -> None:
@@ -36,3 +41,28 @@ def test_load_json_object_handles_valid_and_invalid_files(tmp_path: Path) -> Non
     assert load_json_object(valid) == {"status": "completed"}
     assert load_json_object(invalid) is None
     assert load_json_object(tmp_path / "missing.json") is None
+
+
+def test_resolve_result_artifact_supports_full_workflow_paths_and_stays_in_output_dir(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    preview = output_dir / "rgb_preview.png"
+    preview.write_bytes(b"synthetic preview")
+
+    path = resolve_result_artifact(
+        {"rgb_preview_path": str(preview)},
+        output_dir=output_dir,
+        artifact_key="rgb_preview",
+    )
+
+    assert path == preview
+    assert (
+        resolve_result_artifact(
+            {"rgb_preview_path": str(tmp_path / "outside.png")},
+            output_dir=output_dir,
+            artifact_key="rgb_preview",
+        )
+        is None
+    )

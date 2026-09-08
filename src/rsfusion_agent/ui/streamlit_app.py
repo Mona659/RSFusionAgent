@@ -93,6 +93,27 @@ def load_json_object(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def resolve_result_artifact(
+    fusion_result: dict[str, Any], *, output_dir: Path, artifact_key: str
+) -> Path | None:
+    """Resolve a visual artifact from either agent-tool or full workflow output."""
+
+    artifacts = fusion_result.get("artifacts") or {}
+    candidate = artifacts.get(artifact_key)
+    if not candidate:
+        candidate = fusion_result.get(f"{artifact_key}_path")
+    if not isinstance(candidate, str) or not candidate:
+        return None
+
+    output_root = output_dir.resolve()
+    path = (output_dir / candidate).resolve() if Path(candidate).name == candidate else Path(candidate).resolve()
+    try:
+        path.relative_to(output_root)
+    except ValueError:
+        return None
+    return path if path.is_file() else None
+
+
 def run_agent_from_ui(config: UiRunConfig) -> UiAgentExecution:
     """Execute the CLI so UI and terminal runs share exactly one workflow."""
 
@@ -224,15 +245,13 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
             f"{estimated_cost.get('currency', '')}（以服务商账单为准）"
         )
 
-    artifacts = fusion.get("artifacts") or {}
     image_columns = st.columns(2)
     for column, title, artifact_key in (
         (image_columns[0], "RGB 预览", "rgb_preview"),
         (image_columns[1], "SAM 热力图", "sam_heatmap"),
     ):
-        file_name = artifacts.get(artifact_key)
-        path = output_dir / file_name if file_name else None
-        if path and path.is_file():
+        path = resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=artifact_key)
+        if path:
             column.image(str(path), caption=title, use_container_width=True)
 
     st.subheader("本地结果文件")
