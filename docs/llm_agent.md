@@ -65,6 +65,27 @@ best-effort cost estimate when a local pricing rule exists. Cost estimates are n
 invoice: confirm actual charges in the provider console, particularly when cache or
 long-context pricing applies.
 
+## Runtime preflight gate
+
+Before the CLI constructs an LLM client, `rsfusion agent` runs a local preflight by
+default. It starts the configured model Python interpreter, verifies PyTorch import,
+checks the requested CUDA device, and reads the checkpoint metadata on CPU. The result
+is saved to `<output-dir>/preflight.json` and embedded in `agent_result.json`.
+
+Run it independently while configuring a new machine or Conda environment:
+
+```powershell
+rsfusion preflight-runtime `
+  --checkpoint $checkpoint `
+  --model-python $modelPython `
+  --device cuda `
+  --pretty
+```
+
+Preflight does not perform inference; use `infer-h5` as the full CUDA smoke test.
+If preflight fails, the agent exits before any paid LLM request. `--skip-preflight`
+exists only for diagnosing an already-known environment.
+
 ## Security notes
 
 - Set `RSFUSION_LLM_API_KEY` (or a provider-specific fallback) in the environment;

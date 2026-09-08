@@ -18,6 +18,7 @@ from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.agent.state import FusionRunRequest
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.h5_patch import inspect_h5_pair
+from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 from rsfusion_agent.tools.raster_inspector import inspect_raster
 
 
@@ -37,6 +38,15 @@ def _write_json_file(path: Path, payload: dict, *, indent: int | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=indent)
     path.write_text(f"{text}\n", encoding="utf-8")
+
+
+def _preflight_from_args(args: argparse.Namespace):
+    return preflight_yre151_runtime(
+        checkpoint_path=args.checkpoint,
+        model_python=args.model_python,
+        device=args.device,
+        timeout_seconds=args.preflight_timeout,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +75,20 @@ def build_parser() -> argparse.ArgumentParser:
     h5_parser.add_argument("--target-h5", required=True, help="Target-time DownT2 HDF5.")
     h5_parser.add_argument("--patch-index", type=int, default=0)
     h5_parser.add_argument("--pretty", action="store_true")
+
+    preflight_parser = subparsers.add_parser(
+        "preflight-runtime",
+        help="Check the configured PyTorch/CUDA environment and checkpoint without inference.",
+    )
+    preflight_parser.add_argument("--checkpoint", required=True)
+    preflight_parser.add_argument(
+        "--model-python",
+        default=os.environ.get("RSFUSION_MODEL_PYTHON", sys.executable),
+        help="Python executable from an environment containing compatible PyTorch.",
+    )
+    preflight_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    preflight_parser.add_argument("--preflight-timeout", type=int, default=60)
+    preflight_parser.add_argument("--pretty", action="store_true")
 
     infer_parser = subparsers.add_parser(
         "infer-h5",
@@ -118,6 +142,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_parser.add_argument("--max-turns", type=int, default=6)
     agent_parser.add_argument("--timeout", type=int, default=600)
+    agent_parser.add_argument(
+        "--preflight-timeout",
+        type=int,
+        default=60,
+        help="Maximum seconds for the free local runtime health check before calling the LLM.",
+    )
+    agent_parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip the local runtime health check. Intended only for troubleshooting.",
+    )
     agent_parser.add_argument("--pretty", action="store_true")
     return parser
 
@@ -144,6 +179,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 patch_index=args.patch_index,
             )
         except (FileNotFoundError, IndexError, TypeError, ValueError) as exc:
+            parser.error(str(exc))
+        indent = 2 if args.pretty else None
+        _emit_json(result.model_dump(mode="json"), indent=indent)
+        return 0
+
+    if args.command == "preflight-runtime":
+        try:
+            result = _preflight_from_args(args)
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
         _emit_json(result.model_dump(mode="json"), indent=indent)
@@ -180,6 +224,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 device=args.device,
                 timeout_seconds=args.timeout,
             )
+            runtime_preflight = None
+            if not args.skip_preflight:
+                runtime_preflight = _preflight_from_args(args)
+                _write_json_file(
+                    Path(args.output_dir) / "preflight.json",
+                    runtime_preflight.model_dump(mode="json"),
+                    indent=2,
+                )
             settings = resolve_provider_settings(
                 provider=args.provider,
                 model=args.llm_model,
@@ -194,6 +246,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 client=client,
                 toolbox=AgentToolbox(context),
                 max_turns=args.max_turns,
+                runtime_preflight=runtime_preflight,
             ).run(args.request)
         except Exception as exc:
             parser.error(str(exc))

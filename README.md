@@ -152,6 +152,20 @@ $env:RSFUSION_MODEL_PYTHON = "C:\path\to\model-env\Scripts\python.exe"
 Do not commit this machine-specific path. Set it in the terminal session or pass
 `--model-python` explicitly. The V1 CLI does not automatically load `.env` files.
 
+Before spending tokens on an agent request, check the model environment locally:
+
+```powershell
+rsfusion preflight-runtime `
+  --checkpoint $checkpoint `
+  --model-python $modelPython `
+  --device cuda `
+  --pretty
+```
+
+This verifies the isolated Python executable, PyTorch import, visible CUDA device and
+checkpoint readability. It does not load HDF5 pixels or run a forward pass. A successful
+`infer-h5` remains the full end-to-end model smoke test.
+
 ## Inspect the HDF5 inputs
 
 ```powershell
@@ -253,6 +267,10 @@ Each successful `agent` invocation also saves its full control-plane record to
 per-turn and aggregated token usage, and a best-effort cost estimate when the model
 has a locally documented price rule. The estimate is for development observation only;
 the provider billing console is authoritative.
+
+By default, `agent` runs the same free local preflight before it constructs an LLM
+client. The result is saved as `<output-dir>/preflight.json`; if preflight fails, no
+model request is made. `--skip-preflight` is reserved for troubleshooting.
 
 ## Tests
 

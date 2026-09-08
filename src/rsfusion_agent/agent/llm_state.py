@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from rsfusion_agent.agent.state import FusionRunResult
+from rsfusion_agent.tools.model_runtime import RuntimePreflightResult
 
 
 class LLMToolTrace(BaseModel):
@@ -65,4 +66,5 @@ class NaturalLanguageRunResult(BaseModel):
     usage: LLMTokenUsage = Field(default_factory=LLMTokenUsage)
     model_trace: list[LLMModelTrace] = Field(default_factory=list)
     estimated_cost: LLMCostEstimate | None = None
+    runtime_preflight: RuntimePreflightResult | None = None
     fusion_result: FusionRunResult | None = None

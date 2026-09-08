@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from rsfusion_agent import cli
 from rsfusion_agent.agent.llm_client import (
     FunctionCall,
     ModelTurn,
@@ -14,6 +15,7 @@ from rsfusion_agent.agent.llm_state import LLMTokenUsage
 from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.cli import _write_json_file
+from rsfusion_agent.tools.model_runtime import RuntimePreflightResult
 
 
 class FakeResponsesClient:
@@ -130,6 +132,30 @@ def test_llm_agent_records_usage_and_qwen_cost_estimate() -> None:
     assert result.estimated_cost.estimated_cost == pytest.approx(0.004)
 
 
+def test_llm_agent_records_completed_runtime_preflight() -> None:
+    preflight = RuntimePreflightResult(
+        python_executable="C:/env/python.exe",
+        python_version="3.10.18",
+        torch_version="2.5.1+cu121",
+        requested_device="cuda",
+        resolved_device="cuda",
+        cuda_available=True,
+        cuda_device_name="Synthetic GPU",
+        cuda_total_memory_bytes=8_000_000_000,
+        checkpoint_epoch=200,
+        checkpoint_tensor_count=42,
+    )
+    client = FakeResponsesClient([ModelTurn(response_id="response-1", output_text="环境正常。")])
+
+    result = LLMFusionAgent(
+        client=client,
+        toolbox=FakeToolbox(),
+        runtime_preflight=preflight,
+    ).run("汇报运行环境")
+
+    assert result.runtime_preflight == preflight
+
+
 def test_qwen_settings_accept_generic_environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RSFUSION_LLM_MODEL", "qwen3.7-flash")
     monkeypatch.setenv("RSFUSION_LLM_BASE_URL", "https://example.invalid/v1")
@@ -147,6 +173,45 @@ def test_write_json_file_uses_utf8(tmp_path: Path) -> None:
     _write_json_file(path, {"answer": "融合完成。"}, indent=2)
 
     assert path.read_text(encoding="utf-8") == '{\n  "answer": "融合完成。"\n}\n'
+
+
+def test_agent_does_not_construct_llm_client_when_preflight_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    attempted_client_construction = False
+
+    def failing_preflight(**kwargs: object) -> None:
+        raise RuntimeError("synthetic preflight failure")
+
+    def forbidden_client(**kwargs: object) -> None:
+        nonlocal attempted_client_construction
+        attempted_client_construction = True
+        raise AssertionError("LLM client must not be created after a failed preflight")
+
+    monkeypatch.setattr(cli, "preflight_yre151_runtime", failing_preflight)
+    monkeypatch.setattr(cli, "CompatibleResponsesClient", forbidden_client)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(
+            [
+                "agent",
+                "--request",
+                "运行融合",
+                "--aux-h5",
+                str(tmp_path / "aux.h5"),
+                "--target-h5",
+                str(tmp_path / "target.h5"),
+                "--checkpoint",
+                str(tmp_path / "checkpoint.pth"),
+                "--model-python",
+                str(tmp_path / "python.exe"),
+                "--output-dir",
+                str(tmp_path / "output"),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert not attempted_client_construction
 
 
 def test_toolbox_blocks_inference_before_inspection(tmp_path: Path) -> None:

@@ -14,6 +14,7 @@ from rsfusion_agent.agent.llm_state import (
     NaturalLanguageRunResult,
 )
 from rsfusion_agent.agent.llm_tools import AgentToolbox
+from rsfusion_agent.tools.model_runtime import RuntimePreflightResult
 
 SYSTEM_INSTRUCTIONS = """You are the control plane for RSFusionAgent.
 Use only the supplied function tools. Never claim a file was inspected or a model was run
@@ -34,12 +35,14 @@ class LLMFusionAgent:
         client: ResponsesClient,
         toolbox: AgentToolbox,
         max_turns: int = 6,
+        runtime_preflight: RuntimePreflightResult | None = None,
     ) -> None:
         if max_turns < 1:
             raise ValueError("max_turns must be at least 1")
         self.client = client
         self.toolbox = toolbox
         self.max_turns = max_turns
+        self.runtime_preflight = runtime_preflight
 
     def run(self, request: str) -> NaturalLanguageRunResult:
         if not request.strip():
@@ -93,6 +96,7 @@ class LLMFusionAgent:
                         model=self.client.model,
                         usage=usage,
                     ),
+                    runtime_preflight=self.runtime_preflight,
                     fusion_result=self.toolbox.latest_result,
                 )
 
