@@ -66,12 +66,28 @@ Only `predicted_hs` is the primary V1 output.
 values, no CRS and the legacy synthetic transform `from_origin(0, 0, 1, 1)`.
 
 This output is suitable for regression against the existing test script, not for
-GIS positioning. The future TIFF adapter must inherit CRS and transform from the
+GIS positioning. The later TIFF adapter must inherit CRS and transform from the
 target-time MS raster and define the restored radiometric scale explicitly.
+
+## Raw-TIFF metadata preflight (V0.6)
+
+`rsfusion inspect-tiff-triplet` is a read-only prerequisite for the future adapter.
+It accepts `auxiliary_ms`, `auxiliary_hs`, and `target_ms` TIFF files and expects:
+
+| Field | Auxiliary MS / target MS | Auxiliary HS |
+|---|---:|---:|
+| Bands | 4 | 151 |
+| CRS | Same CRS for all three inputs | Same CRS as MS |
+| Bounds | Auxiliary and target MS share bounds | Same bounds as auxiliary MS |
+| Grid | Auxiliary and target MS have equal dimensions/resolution | Width, height, and resolution differ by exactly scale 3 |
+
+It returns `is_ready_for_preprocessing`, `blocking_issues`, and non-blocking warnings.
+It intentionally does not inspect pixel registration, normalize reflectance, create HDF5,
+or execute inference.
 
 ## Explicitly unsupported in V1
 
-- Raw TIFF ingestion
+- TIFF-to-HDF5 conversion and raw-TIFF inference
 - Registration or reprojection
 - Real/full-resolution `RealT*YRE.h5` profile
 - 100-band HZW profile
@@ -95,4 +111,3 @@ spatial_metadata (optional)
 
 The Agent workflow and model runtime must not depend directly on HDF5 channel
 indices.
-

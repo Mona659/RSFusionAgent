@@ -20,6 +20,7 @@ from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.h5_patch import inspect_h5_pair
 from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 from rsfusion_agent.tools.raster_inspector import inspect_raster
+from rsfusion_agent.tools.tiff_triplet import inspect_tiff_triplet
 
 
 def _emit_json(payload: dict, *, indent: int | None) -> None:
@@ -66,6 +67,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pretty-print the JSON output.",
     )
+
+    tiff_triplet_parser = subparsers.add_parser(
+        "inspect-tiff-triplet",
+        help="Validate raw auxiliary-MS, auxiliary-HS and target-MS TIFF metadata.",
+    )
+    tiff_triplet_parser.add_argument("--aux-ms", required=True, help="Auxiliary-time MS TIFF.")
+    tiff_triplet_parser.add_argument("--aux-hs", required=True, help="Auxiliary-time HS TIFF.")
+    tiff_triplet_parser.add_argument("--target-ms", required=True, help="Target-time MS TIFF.")
+    tiff_triplet_parser.add_argument("--scale", type=int, default=3)
+    tiff_triplet_parser.add_argument("--expected-ms-bands", type=int, default=4)
+    tiff_triplet_parser.add_argument("--expected-hs-bands", type=int, default=151)
+    tiff_triplet_parser.add_argument("--grid-tolerance", type=float, default=1e-6)
+    tiff_triplet_parser.add_argument("--pretty", action="store_true")
 
     h5_parser = subparsers.add_parser(
         "inspect-h5",
@@ -181,6 +195,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (FileNotFoundError, ValueError) as exc:
             parser.error(str(exc))
 
+        indent = 2 if args.pretty else None
+        _emit_json(result.model_dump(mode="json"), indent=indent)
+        return 0
+
+    if args.command == "inspect-tiff-triplet":
+        try:
+            result = inspect_tiff_triplet(
+                args.aux_ms,
+                args.aux_hs,
+                args.target_ms,
+                scale=args.scale,
+                expected_ms_bands=args.expected_ms_bands,
+                expected_hs_bands=args.expected_hs_bands,
+                grid_tolerance=args.grid_tolerance,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(str(exc))
         indent = 2 if args.pretty else None
         _emit_json(result.model_dump(mode="json"), indent=indent)
         return 0

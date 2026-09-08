@@ -5,8 +5,9 @@
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
 > **V1 scope:** YRE reduced-resolution profile, 151 HS bands, preprocessed HDF5
-> inputs and one test patch. Raw-TIFF ingestion and whole-scene stitching are
-> deliberately reserved for later versions.
+> inputs and one test patch. V0.6 additionally validates a future raw-TIFF input
+> triplet at metadata level; conversion and whole-scene stitching are reserved for
+> later versions.
 
 ## What V1 does
 
@@ -103,8 +104,9 @@ known legacy limitations.
 - [x] Save a 151-band prediction TIFF, RGB preview and SAM heatmap
 - [x] Save machine-readable metrics, tool trace and Markdown report
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
-- [ ] Accept three original TIFF inputs
-- [ ] Validate pre-registration and geospatial alignment
+- [x] Validate three original TIFF inputs before preprocessing (metadata only)
+- [ ] Convert TIFF triplet to the legacy HDF5 profile
+- [ ] Validate pixel-level registration and geospatial alignment
 - [ ] Perform overlapping whole-scene inference and weighted stitching
 - [x] Add optional LLM planning with strict function tools
 - [x] Provide a local Streamlit demo with metrics, previews and result downloads
@@ -211,6 +213,30 @@ rsfusion inspect-h5 `
   --patch-index 0 `
   --pretty
 ```
+
+## Validate a future raw-TIFF input triplet
+
+This is a metadata-only safety gate for the planned raw-data adapter. It expects
+auxiliary MS (4 bands), auxiliary HS (151 bands at one-third width and height), and
+target MS (4 bands). It checks CRS, bounds, grid compatibility, and the 3× resolution
+relation; it never loads all pixels, reprojects, registers, crops, or runs inference.
+
+```powershell
+$auxMsTif = "C:\\path\\to\\T1_MS.tif"
+$auxHsTif = "C:\\path\\to\\T1_HS.tif"
+$targetMsTif = "C:\\path\\to\\T2_MS.tif"
+
+rsfusion inspect-tiff-triplet `
+  --aux-ms $auxMsTif `
+  --aux-hs $auxHsTif `
+  --target-ms $targetMsTif `
+  --scale 3 `
+  --pretty
+```
+
+Use `is_ready_for_preprocessing: true` as the prerequisite for the later TIFF-to-HDF5
+adapter. Any `blocking_issues` must be fixed in the source data; this project does not
+silently alter spatial data.
 
 ## Run V1 inference
 
