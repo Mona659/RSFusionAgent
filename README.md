@@ -5,9 +5,9 @@
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
 > **V1 scope:** YRE reduced-resolution profile, 151 HS bands, preprocessed HDF5
-> inputs and one test patch. V0.7 additionally supports direct inference for one
-> metadata-validated raw-TIFF triplet crop. TIFF-to-HDF5 conversion and whole-scene
-> stitching are reserved for later versions.
+> inputs and one test patch. V0.8 additionally provides reproducible native TIFF crop
+> windows, including the legacy YRE test window. TIFF-to-HDF5 conversion, registration,
+> and whole-scene stitching are reserved for later versions.
 
 ## What V1 does
 
@@ -105,6 +105,7 @@ known legacy limitations.
 - [x] Save machine-readable metrics, tool trace and Markdown report
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
 - [x] Validate three original TIFF inputs before preprocessing (metadata only)
+- [x] Crop a raw TIFF triplet with a traceable YRE-legacy or custom source-pixel window
 - [x] Run one aligned raw-TIFF crop and preserve target-MS georeferencing in output
 - [ ] Convert TIFF triplet to the legacy HDF5 profile
 - [ ] Validate pixel-level registration and geospatial alignment
@@ -238,6 +239,50 @@ rsfusion inspect-tiff-triplet `
 Use `is_ready_for_preprocessing: true` as the prerequisite for the later TIFF-to-HDF5
 adapter. Any `blocking_issues` must be fixed in the source data; this project does not
 silently alter spatial data.
+
+## Crop the raw TIFF triplet with the legacy YRE window
+
+`Database.py` manually pairs source-pixel windows rather than registering TIFFs. The
+default crop profile reproduces its active YRE test code exactly:
+
+| Raster role | Source-pixel window |
+|---|---|
+| Auxiliary MS | `row=0, col=360, height=540, width=540` |
+| Target MS | `row=0, col=360, height=540, width=540` |
+| Auxiliary HS | `row=0, col=120, height=180, width=180` |
+
+```powershell
+rsfusion crop-tiff-triplet `
+  --aux-ms $auxMsTif `
+  --aux-hs $auxHsTif `
+  --target-ms $targetMsTif `
+  --output-dir "outputs\\yre_legacy_crop" `
+  --pretty
+```
+
+The command writes three new cropped TIFFs and `crop_manifest.json`; it never changes
+the source files. To choose another range, use an explicit profile. MS height/width must
+be divisible by three; omitted HS offsets are derived from the MS offsets divided by three.
+
+```powershell
+rsfusion crop-tiff-triplet `
+  --aux-ms $auxMsTif `
+  --aux-hs $auxHsTif `
+  --target-ms $targetMsTif `
+  --output-dir "outputs\\custom_crop" `
+  --profile custom `
+  --ms-row-offset 0 `
+  --ms-col-offset 360 `
+  --window-height 540 `
+  --window-width 540 `
+  --hs-row-offset 0 `
+  --hs-col-offset 120 `
+  --pretty
+```
+
+The crop manifest records the correspondence assumption. It is not a registration
+result: the strict `infer-tiff` route will continue to reject rasters whose CRS/bounds
+do not align until an explicit alignment adapter is added.
 
 ## Run one raw-TIFF crop (no reference metrics)
 

@@ -97,6 +97,24 @@ route. The output `predicted_hs.tif` inherits CRS and the window transform from 
 MS. Because the input contract has no target-time HS reference, no full-reference metrics
 or SAM heatmap can be produced.
 
+## Raw-TIFF crop windows (V0.8)
+
+`rsfusion crop-tiff-triplet` writes a reproducible, native-grid crop triplet and a
+`crop_manifest.json`. Its default `yre_legacy_test_v1` profile is taken directly from
+the active YRE test section of `Database.py`:
+
+```text
+MS (auxiliary and target): rows [0:540], columns [360:900]
+HS (auxiliary):            rows [0:180], columns [120:300]
+```
+
+The `custom` profile accepts MS row/column offset plus height/width, and optional
+independent HS row/column offset. MS dimensions must be divisible by three; the default
+HS dimensions are derived by dividing MS dimensions by three. Cropping preserves each
+source raster's own transform and CRS, so it makes no registration claim. A later,
+explicit alignment adapter must consume the crop manifest before the strict raw-TIFF
+inference route can use a misaligned source triplet.
+
 ## Explicitly unsupported in V1
 
 - TIFF-to-HDF5 conversion
