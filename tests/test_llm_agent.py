@@ -12,7 +12,12 @@ from rsfusion_agent.agent.llm_client import (
     resolve_provider_settings,
 )
 from rsfusion_agent.agent.llm_state import LLMTokenUsage
-from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
+from rsfusion_agent.agent.llm_tools import (
+    AgentToolbox,
+    LLMToolContext,
+    TiffAgentToolbox,
+    TiffLLMToolContext,
+)
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.cli import _write_json_file
 from rsfusion_agent.tools.model_runtime import RuntimePreflightResult
@@ -227,6 +232,20 @@ def test_toolbox_blocks_inference_before_inspection(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Safety gate"):
         toolbox.execute("run_yre151_fusion", {"patch_index": 0})
+
+
+def test_tiff_toolbox_blocks_inference_before_manifest_inspection(tmp_path: Path) -> None:
+    toolbox = TiffAgentToolbox(
+        TiffLLMToolContext(
+            crop_manifest_path=tmp_path / "crop_manifest.json",
+            checkpoint_path=tmp_path / "model.pth",
+            model_python=tmp_path / "python.exe",
+            output_dir=tmp_path / "output",
+        )
+    )
+
+    with pytest.raises(ValueError, match="Safety gate"):
+        toolbox.execute("run_yre151_tiff_fusion", {})
 
 
 def test_toolbox_redacts_configured_paths_from_errors(tmp_path: Path) -> None:

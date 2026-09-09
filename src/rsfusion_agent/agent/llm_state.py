@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from rsfusion_agent.agent.state import FusionRunResult
+from rsfusion_agent.agent.tiff_workflow import TiffFusionResult
 from rsfusion_agent.tools.model_runtime import RuntimePreflightResult
 
 
@@ -67,4 +68,4 @@ class NaturalLanguageRunResult(BaseModel):
     model_trace: list[LLMModelTrace] = Field(default_factory=list)
     estimated_cost: LLMCostEstimate | None = None
     runtime_preflight: RuntimePreflightResult | None = None
-    fusion_result: FusionRunResult | None = None
+    fusion_result: FusionRunResult | TiffFusionResult | None = None

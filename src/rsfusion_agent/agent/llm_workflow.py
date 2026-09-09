@@ -18,11 +18,11 @@ from rsfusion_agent.tools.model_runtime import RuntimePreflightResult
 
 SYSTEM_INSTRUCTIONS = """You are the control plane for RSFusionAgent.
 Use only the supplied function tools. Never claim a file was inspected or a model was run
-unless the corresponding tool returned ok=true. For an inference request, first call
-inspect_yre151_h5, then run_yre151_fusion, and finally summarize the returned metrics and
-artifact names. Do not request or manipulate image arrays. The CLI has already authorized
-exactly one patch index; use that configured index. If a tool returns an error, explain it
-or choose a safe recovery tool. Answer in the user's language.
+unless the corresponding tool returned ok=true. For an inference request, first call the
+supplied inspect tool, then the supplied run tool, and finally summarize returned artifact
+names and metrics only when the tool reported them. Do not request or manipulate image arrays.
+The CLI has already authorized all paths, crop settings and patch index. If a tool returns an
+error, explain it or choose a safe recovery tool. Answer in the user's language.
 """
 
 

@@ -9,9 +9,15 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from rsfusion_agent.agent.state import FusionRunRequest, FusionRunResult
+from rsfusion_agent.agent.tiff_workflow import (
+    TiffFusionRequest,
+    TiffFusionResult,
+    YRE151TiffPatchAgent,
+)
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.error_diagnosis import diagnose_error
 from rsfusion_agent.tools.h5_patch import H5PairInspection, inspect_h5_pair
+from rsfusion_agent.tools.tiff_patch import inspect_manifest_crop_triplet
 
 
 class LLMToolContext(BaseModel):
@@ -211,6 +217,164 @@ class AgentToolbox:
                 "rgb_preview": Path(result.rgb_preview_path).name,
                 "sam_heatmap": Path(result.sam_heatmap_path).name,
                 "metrics": Path(result.metrics_path).name,
+                "manifest": Path(result.manifest_path).name,
+                "report": Path(result.report_path).name,
+            },
+            "warnings": result.warnings,
+        }
+
+
+class TiffLLMToolContext(BaseModel):
+    """Local-only configuration for one crop-manifest TIFF Agent session."""
+
+    crop_manifest_path: Path
+    checkpoint_path: Path
+    model_python: Path
+    output_dir: Path
+    patch_size: int = Field(default=180, gt=0)
+    row_offset: int = Field(default=0, ge=0)
+    col_offset: int = Field(default=0, ge=0)
+    device: str = "auto"
+    timeout_seconds: int = Field(default=600, gt=0)
+    runtime_retries: int = Field(default=1, ge=0, le=2)
+
+
+TiffWorkflowFactory = Callable[[], YRE151TiffPatchAgent]
+
+
+class TiffAgentToolbox:
+    """Allowlisted raw-TIFF tools bound to one user-authored crop manifest."""
+
+    def __init__(
+        self,
+        context: TiffLLMToolContext,
+        workflow_factory: TiffWorkflowFactory = YRE151TiffPatchAgent,
+    ) -> None:
+        self.context = context
+        self.workflow_factory = workflow_factory
+        self.inspected = False
+        self.latest_result: TiffFusionResult | None = None
+
+    @staticmethod
+    def definitions() -> list[dict[str, Any]]:
+        empty_schema = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+        return [
+            {
+                "type": "function",
+                "name": "inspect_yre151_tiff_crop",
+                "description": (
+                    "Validate the configured local crop manifest and its three TIFF crop artifacts. "
+                    "The manifest is an explicit pixel-correspondence assumption, not auto-registration."
+                ),
+                "parameters": empty_schema,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "run_yre151_tiff_fusion",
+                "description": (
+                    "Run the configured DC-STSF checkpoint for the single TIFF patch authorized by "
+                    "the crop manifest. Call inspect_yre151_tiff_crop successfully first."
+                ),
+                "parameters": empty_schema,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "get_latest_tiff_fusion_result",
+                "description": "Read artifact names and runtime metadata from the latest local TIFF run.",
+                "parameters": empty_schema,
+                "strict": True,
+            },
+        ]
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if arguments:
+            raise ValueError(f"{name} does not accept arguments")
+        if name == "inspect_yre151_tiff_crop":
+            inspection, crop = inspect_manifest_crop_triplet(self.context.crop_manifest_path)
+            self.inspected = True
+            return {
+                "ok": True,
+                "profile": crop.profile,
+                "alignment_mode": "explicit_crop_manifest",
+                "ms_shape": [inspection.target_ms.height, inspection.target_ms.width, inspection.target_ms.band_count],
+                "hs_shape": [inspection.auxiliary_hs.height, inspection.auxiliary_hs.width, inspection.auxiliary_hs.band_count],
+                "windows": {
+                    "auxiliary_ms": crop.auxiliary_ms_window.model_dump(),
+                    "auxiliary_hs": crop.auxiliary_hs_window.model_dump(),
+                    "target_ms": crop.target_ms_window.model_dump(),
+                },
+                "warnings": inspection.warnings,
+            }
+        if name == "run_yre151_tiff_fusion":
+            if not self.inspected:
+                raise ValueError(
+                    "Safety gate: call inspect_yre151_tiff_crop successfully before TIFF inference"
+                )
+            result = self.workflow_factory().run(
+                TiffFusionRequest(
+                    crop_manifest_path=self.context.crop_manifest_path,
+                    checkpoint_path=self.context.checkpoint_path,
+                    model_python=self.context.model_python,
+                    output_dir=self.context.output_dir,
+                    patch_size=self.context.patch_size,
+                    row_offset=self.context.row_offset,
+                    col_offset=self.context.col_offset,
+                    device=self.context.device,
+                    timeout_seconds=self.context.timeout_seconds,
+                    runtime_retries=self.context.runtime_retries,
+                )
+            )
+            self.latest_result = result
+            return self._result_summary(result)
+        if name == "get_latest_tiff_fusion_result":
+            if self.latest_result is None:
+                raise ValueError("No TIFF fusion result is available in this agent session")
+            return self._result_summary(self.latest_result)
+        raise ValueError(f"Tool is not allowlisted: {name}")
+
+    def sanitize_error(self, error: Exception) -> dict[str, Any]:
+        message = str(error)
+        configured_paths = {
+            "crop_manifest_path": self.context.crop_manifest_path,
+            "checkpoint_path": self.context.checkpoint_path,
+            "model_python": self.context.model_python,
+            "output_dir": self.context.output_dir,
+        }
+        for label, path in configured_paths.items():
+            raw_path = str(path)
+            resolved_path = str(path.expanduser().resolve())
+            for candidate in {raw_path, resolved_path, raw_path.replace("\\", "/")}:
+                if candidate:
+                    message = message.replace(candidate, f"<{label}>")
+        diagnosis = diagnose_error(error)
+        return {
+            "ok": False,
+            "error_type": type(error).__name__,
+            "error": message,
+            "diagnosis": diagnosis.model_dump(mode="json"),
+        }
+
+    @staticmethod
+    def _result_summary(result: TiffFusionResult) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "status": result.status,
+            "profile": result.profile,
+            "alignment_mode": result.spatial_metadata.alignment_mode,
+            "device": result.runtime.device,
+            "checkpoint_epoch": result.runtime.checkpoint_epoch,
+            "runtime_seconds": result.runtime.runtime_seconds,
+            "metrics_status": result.metrics_status,
+            "artifacts": {
+                "predicted_hs": Path(result.predicted_hs_path).name,
+                "rgb_preview": Path(result.rgb_preview_path).name,
                 "manifest": Path(result.manifest_path).name,
                 "report": Path(result.report_path).name,
             },

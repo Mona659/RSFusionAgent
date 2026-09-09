@@ -7,8 +7,8 @@ show an API key, private absolute paths, or raw dataset files on screen.
 ## 0:00–0:25 — Problem and boundary
 
 > I built a local Agent for YRE spatiotemporal-spectral image fusion. The first version
-> deliberately supports one preprocessed 151-band H5 patch. The LLM orchestrates tools;
-> it never receives image arrays or selects arbitrary local paths.
+> supports a verified H5 evaluation route and a raw-TIFF crop-manifest route. The LLM
+> orchestrates tools; it never receives image arrays or selects arbitrary local paths.
 
 Open the project README architecture diagram, then launch `rsfusion-ui`.
 
@@ -50,9 +50,9 @@ Show that an old run can be loaded under **本地运行历史** without making a
 ## 2:30–3:00 — Reliability and roadmap
 
 > Native runtime failures are categorized for the Agent. A known Windows fast-fail can
-> be retried once and records its attempt count. The current boundary is H5 single-patch
-> inference; raw TIFF preprocessing and whole-scene stitching are planned as later
-> extensions, rather than being overstated in this version.
+> be retried once and records its attempt count. The TIFF mode uses an explicit crop
+> manifest to reproduce legacy source-pixel correspondence, not automatic registration.
+> Whole-scene stitching remains a later extension.
 
 Close with the GitHub Actions CI badge and test command:
 

@@ -3,6 +3,7 @@ from pathlib import Path
 from rsfusion_agent.ui.streamlit_app import (
     UiRunConfig,
     build_agent_command,
+    build_crop_command,
     format_history_label,
     list_run_history,
     load_json_object,
@@ -33,6 +34,37 @@ def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Pat
     assert "--skip-preflight" not in command
     assert command[command.index("--runtime-retries") + 1] == "1"
     assert not any("api-key" in item.lower() or "api_key" in item.lower() for item in command)
+
+
+def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="检查裁剪清单并融合 TIFF patch",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-1",
+        input_mode="tiff",
+        auxiliary_ms_path=tmp_path / "aux_ms.tif",
+        auxiliary_hs_path=tmp_path / "aux_hs.tif",
+        target_ms_path=tmp_path / "target_ms.tif",
+        crop_profile="custom",
+        ms_row_offset=0,
+        ms_col_offset=360,
+        window_height=540,
+        window_width=540,
+        hs_row_offset=0,
+        hs_col_offset=120,
+        crop_manifest_path=tmp_path / "existing_crop" / "crop_manifest.json",
+    )
+
+    agent_command = build_agent_command(config, python_executable="ui-python.exe")
+    crop_command = build_crop_command(config, python_executable="ui-python.exe")
+
+    assert agent_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-tiff"]
+    assert "--crop-manifest" in agent_command
+    assert agent_command[agent_command.index("--patch-size") + 1] == "180"
+    assert crop_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "crop-tiff-triplet"]
+    assert crop_command[crop_command.index("--profile") + 1] == "custom"
+    assert crop_command[crop_command.index("--hs-col-offset") + 1] == "120"
 
 
 def test_load_json_object_handles_valid_and_invalid_files(tmp_path: Path) -> None:

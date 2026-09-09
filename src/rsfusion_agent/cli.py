@@ -13,7 +13,12 @@ from rsfusion_agent.agent.llm_client import (
     CompatibleResponsesClient,
     resolve_provider_settings,
 )
-from rsfusion_agent.agent.llm_tools import AgentToolbox, LLMToolContext
+from rsfusion_agent.agent.llm_tools import (
+    AgentToolbox,
+    LLMToolContext,
+    TiffAgentToolbox,
+    TiffLLMToolContext,
+)
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
 from rsfusion_agent.agent.state import FusionRunRequest
 from rsfusion_agent.agent.tiff_workflow import TiffFusionRequest, YRE151TiffPatchAgent
@@ -160,9 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
         "infer-tiff",
         help="Run one metadata-validated raw-TIFF YRE-151 crop without reference metrics.",
     )
-    infer_tiff_parser.add_argument("--aux-ms", required=True)
-    infer_tiff_parser.add_argument("--aux-hs", required=True)
-    infer_tiff_parser.add_argument("--target-ms", required=True)
+    infer_tiff_parser.add_argument("--aux-ms")
+    infer_tiff_parser.add_argument("--aux-hs")
+    infer_tiff_parser.add_argument("--target-ms")
+    infer_tiff_parser.add_argument(
+        "--crop-manifest",
+        help="Use three TIFF crops declared by a prior crop-tiff-triplet manifest.",
+    )
     infer_tiff_parser.add_argument("--checkpoint", required=True)
     infer_tiff_parser.add_argument("--output-dir", required=True)
     infer_tiff_parser.add_argument("--patch-size", type=int, default=180)
@@ -230,6 +239,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the local runtime health check. Intended only for troubleshooting.",
     )
     agent_parser.add_argument("--pretty", action="store_true")
+
+    tiff_agent_parser = subparsers.add_parser(
+        "agent-tiff",
+        help="Use natural language to run one crop-manifest TIFF fusion through allowlisted tools.",
+    )
+    tiff_agent_parser.add_argument("--request", required=True)
+    tiff_agent_parser.add_argument("--crop-manifest", required=True)
+    tiff_agent_parser.add_argument("--checkpoint", required=True)
+    tiff_agent_parser.add_argument("--output-dir", required=True)
+    tiff_agent_parser.add_argument("--patch-size", type=int, default=180)
+    tiff_agent_parser.add_argument("--row-offset", type=int, default=0)
+    tiff_agent_parser.add_argument("--col-offset", type=int, default=0)
+    tiff_agent_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    tiff_agent_parser.add_argument(
+        "--model-python",
+        default=os.environ.get("RSFUSION_MODEL_PYTHON", sys.executable),
+    )
+    tiff_agent_parser.add_argument(
+        "--provider",
+        choices=("openai", "qwen", "deepseek", "custom"),
+        default=os.environ.get("RSFUSION_LLM_PROVIDER", "openai"),
+    )
+    tiff_agent_parser.add_argument("--llm-model", default=None)
+    tiff_agent_parser.add_argument("--base-url", default=None)
+    tiff_agent_parser.add_argument("--max-turns", type=int, default=6)
+    tiff_agent_parser.add_argument("--timeout", type=int, default=600)
+    tiff_agent_parser.add_argument("--runtime-retries", type=int, choices=(0, 1, 2), default=1)
+    tiff_agent_parser.add_argument("--preflight-timeout", type=int, default=60)
+    tiff_agent_parser.add_argument("--skip-preflight", action="store_true")
+    tiff_agent_parser.add_argument("--pretty", action="store_true")
     return parser
 
 
@@ -329,11 +368,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "infer-tiff":
         try:
+            has_manifest = bool(args.crop_manifest)
+            has_all_paths = all((args.aux_ms, args.aux_hs, args.target_ms))
+            if has_manifest == has_all_paths:
+                raise ValueError(
+                    "Provide either --crop-manifest or all of --aux-ms, --aux-hs and --target-ms"
+                )
             result = YRE151TiffPatchAgent().run(
                 TiffFusionRequest(
-                    auxiliary_ms_path=Path(args.aux_ms),
-                    auxiliary_hs_path=Path(args.aux_hs),
-                    target_ms_path=Path(args.target_ms),
+                    auxiliary_ms_path=Path(args.aux_ms) if args.aux_ms else None,
+                    auxiliary_hs_path=Path(args.aux_hs) if args.aux_hs else None,
+                    target_ms_path=Path(args.target_ms) if args.target_ms else None,
+                    crop_manifest_path=Path(args.crop_manifest) if args.crop_manifest else None,
                     checkpoint_path=Path(args.checkpoint),
                     model_python=Path(args.model_python),
                     output_dir=Path(args.output_dir),
@@ -385,6 +431,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = LLMFusionAgent(
                 client=client,
                 toolbox=AgentToolbox(context),
+                max_turns=args.max_turns,
+                runtime_preflight=runtime_preflight,
+            ).run(args.request)
+        except Exception as exc:
+            parser.error(str(exc))
+        indent = 2 if args.pretty else None
+        payload = result.model_dump(mode="json")
+        _write_json_file(Path(args.output_dir) / "agent_result.json", payload, indent=indent)
+        _emit_json(payload, indent=indent)
+        return 0
+
+    if args.command == "agent-tiff":
+        try:
+            context = TiffLLMToolContext(
+                crop_manifest_path=Path(args.crop_manifest),
+                checkpoint_path=Path(args.checkpoint),
+                model_python=Path(args.model_python),
+                output_dir=Path(args.output_dir),
+                patch_size=args.patch_size,
+                row_offset=args.row_offset,
+                col_offset=args.col_offset,
+                device=args.device,
+                timeout_seconds=args.timeout,
+                runtime_retries=args.runtime_retries,
+            )
+            runtime_preflight = None
+            if not args.skip_preflight:
+                runtime_preflight = _preflight_from_args(args)
+                _write_json_file(
+                    Path(args.output_dir) / "preflight.json",
+                    runtime_preflight.model_dump(mode="json"),
+                    indent=2,
+                )
+            settings = resolve_provider_settings(
+                provider=args.provider,
+                model=args.llm_model,
+                base_url=args.base_url,
+            )
+            client = CompatibleResponsesClient(
+                provider=settings.provider,
+                model=settings.model,
+                base_url=settings.base_url,
+            )
+            result = LLMFusionAgent(
+                client=client,
+                toolbox=TiffAgentToolbox(context),
                 max_turns=args.max_turns,
                 runtime_preflight=runtime_preflight,
             ).run(args.request)

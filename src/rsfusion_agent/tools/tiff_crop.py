@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import rasterio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from rasterio.windows import Window
 
 from rsfusion_agent.tools.h5_patch import HS_BANDS, MS_BANDS, SCALE
@@ -39,6 +39,26 @@ class TiffCropResult(BaseModel):
     target_ms_path: str
     manifest_path: str
     warnings: list[str]
+
+
+def load_crop_manifest(path: str | Path) -> TiffCropResult:
+    """Read a crop manifest and reject malformed or missing local artifacts."""
+
+    manifest_path = Path(path).expanduser().resolve()
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Crop manifest does not exist: {manifest_path}")
+    try:
+        result = TiffCropResult.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValidationError, ValueError) as exc:
+        raise ValueError(f"Cannot read crop manifest '{manifest_path}': {exc}") from exc
+    for artifact_path, role in (
+        (result.auxiliary_ms_path, "Auxiliary MS crop"),
+        (result.auxiliary_hs_path, "Auxiliary HS crop"),
+        (result.target_ms_path, "Target MS crop"),
+    ):
+        if not Path(artifact_path).is_file():
+            raise FileNotFoundError(f"{role} declared by crop manifest does not exist: {artifact_path}")
+    return result
 
 
 def resolve_crop_windows(

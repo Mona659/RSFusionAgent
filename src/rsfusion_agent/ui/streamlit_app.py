@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,15 +17,30 @@ class UiRunConfig:
     """Non-secret configuration collected by the local UI."""
 
     request: str
-    auxiliary_h5_path: Path
-    target_h5_path: Path
     checkpoint_path: Path
     model_python: Path
     output_dir: Path
+    input_mode: str = "h5"
+    auxiliary_h5_path: Path | None = None
+    target_h5_path: Path | None = None
+    auxiliary_ms_path: Path | None = None
+    auxiliary_hs_path: Path | None = None
+    target_ms_path: Path | None = None
+    crop_manifest_path: Path | None = None
+    crop_profile: str = "yre_legacy_test_v1"
+    ms_row_offset: int | None = None
+    ms_col_offset: int | None = None
+    window_height: int | None = None
+    window_width: int | None = None
+    hs_row_offset: int | None = None
+    hs_col_offset: int | None = None
     provider: str = "qwen"
     llm_model: str | None = None
     base_url: str | None = None
     patch_index: int = 0
+    patch_size: int = 180
+    row_offset: int = 0
+    col_offset: int = 0
     device: str = "cuda"
     timeout_seconds: int = 600
     preflight_timeout_seconds: int = 60
@@ -56,41 +71,120 @@ class UiRunHistoryItem:
 def build_agent_command(config: UiRunConfig, *, python_executable: str | None = None) -> list[str]:
     """Build a shell-free CLI command without exposing API keys in arguments."""
 
-    command = [
-        python_executable or sys.executable,
-        "-m",
-        "rsfusion_agent.cli",
-        "agent",
-        "--request",
-        config.request,
-        "--aux-h5",
-        str(config.auxiliary_h5_path),
-        "--target-h5",
-        str(config.target_h5_path),
-        "--checkpoint",
-        str(config.checkpoint_path),
-        "--model-python",
-        str(config.model_python),
-        "--output-dir",
-        str(config.output_dir),
-        "--patch-index",
-        str(config.patch_index),
-        "--device",
-        config.device,
-        "--provider",
-        config.provider,
-        "--timeout",
-        str(config.timeout_seconds),
-        "--preflight-timeout",
-        str(config.preflight_timeout_seconds),
-        "--runtime-retries",
-        str(config.runtime_retries),
-        "--pretty",
-    ]
+    command = [python_executable or sys.executable, "-m", "rsfusion_agent.cli"]
+    if config.input_mode == "h5":
+        if config.auxiliary_h5_path is None or config.target_h5_path is None:
+            raise ValueError("H5 mode requires auxiliary and target H5 paths")
+        command.extend(
+            [
+                "agent",
+                "--request",
+                config.request,
+                "--aux-h5",
+                str(config.auxiliary_h5_path),
+                "--target-h5",
+                str(config.target_h5_path),
+                "--patch-index",
+                str(config.patch_index),
+            ]
+        )
+    elif config.input_mode == "tiff":
+        if config.crop_manifest_path is None:
+            raise ValueError("TIFF mode requires a generated crop manifest")
+        command.extend(
+            [
+                "agent-tiff",
+                "--request",
+                config.request,
+                "--crop-manifest",
+                str(config.crop_manifest_path),
+                "--patch-size",
+                str(config.patch_size),
+                "--row-offset",
+                str(config.row_offset),
+                "--col-offset",
+                str(config.col_offset),
+            ]
+        )
+    else:
+        raise ValueError(f"Unsupported UI input mode: {config.input_mode}")
+    command.extend(
+        [
+            "--checkpoint",
+            str(config.checkpoint_path),
+            "--model-python",
+            str(config.model_python),
+            "--output-dir",
+            str(config.output_dir),
+            "--device",
+            config.device,
+            "--provider",
+            config.provider,
+            "--timeout",
+            str(config.timeout_seconds),
+            "--preflight-timeout",
+            str(config.preflight_timeout_seconds),
+            "--runtime-retries",
+            str(config.runtime_retries),
+            "--pretty",
+        ]
+    )
     if config.llm_model:
         command.extend(("--llm-model", config.llm_model))
     if config.base_url:
         command.extend(("--base-url", config.base_url))
+    return command
+
+
+def build_crop_command(config: UiRunConfig, *, python_executable: str | None = None) -> list[str]:
+    """Build the local TIFF crop command used before a manifest-backed agent run."""
+
+    if config.input_mode != "tiff":
+        raise ValueError("Only TIFF mode can create a crop manifest")
+    if None in (config.auxiliary_ms_path, config.auxiliary_hs_path, config.target_ms_path):
+        raise ValueError("TIFF mode requires auxiliary MS/HS and target MS paths")
+    command = [
+        python_executable or sys.executable,
+        "-m",
+        "rsfusion_agent.cli",
+        "crop-tiff-triplet",
+        "--aux-ms",
+        str(config.auxiliary_ms_path),
+        "--aux-hs",
+        str(config.auxiliary_hs_path),
+        "--target-ms",
+        str(config.target_ms_path),
+        "--output-dir",
+        str(config.output_dir / "prepared_crop"),
+        "--profile",
+        config.crop_profile,
+        "--pretty",
+    ]
+    if config.crop_profile == "custom":
+        required = (
+            config.ms_row_offset,
+            config.ms_col_offset,
+            config.window_height,
+            config.window_width,
+        )
+        if any(value is None for value in required):
+            raise ValueError("Custom TIFF crop requires MS offset and window values")
+        command.extend(
+            [
+                "--ms-row-offset",
+                str(config.ms_row_offset),
+                "--ms-col-offset",
+                str(config.ms_col_offset),
+                "--window-height",
+                str(config.window_height),
+                "--window-width",
+                str(config.window_width),
+            ]
+        )
+        if config.hs_row_offset is not None:
+            command.extend(("--hs-row-offset", str(config.hs_row_offset)))
+        if config.hs_col_offset is not None:
+            command.extend(("--hs-col-offset", str(config.hs_col_offset)))
     return command
 
 
@@ -159,8 +253,30 @@ def resolve_result_artifact(
 def run_agent_from_ui(config: UiRunConfig) -> UiAgentExecution:
     """Execute the CLI so UI and terminal runs share exactly one workflow."""
 
+    active_config = config
+    if config.input_mode == "tiff" and config.crop_manifest_path is None:
+        crop = subprocess.run(
+            build_crop_command(config),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=config.timeout_seconds,
+            env=os.environ.copy(),
+        )
+        if crop.returncode != 0:
+            return UiAgentExecution(
+                return_code=crop.returncode,
+                stdout=crop.stdout,
+                stderr=crop.stderr,
+                result_path=config.output_dir / "agent_result.json",
+                result=None,
+            )
+        active_config = replace(
+            config, crop_manifest_path=config.output_dir / "prepared_crop" / "crop_manifest.json"
+        )
     completed = subprocess.run(
-        build_agent_command(config),
+        build_agent_command(active_config),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -187,8 +303,33 @@ def _build_config(st: Any) -> UiRunConfig:
 
     with st.sidebar:
         st.header("运行配置")
-        auxiliary = st.text_input("辅助时相 H5", value=_env_default("RSFUSION_AUX_H5"))
-        target = st.text_input("目标时相 H5", value=_env_default("RSFUSION_TARGET_H5"))
+        input_mode = st.radio("输入模式", ("H5 演示模式", "原始 TIFF 模式"), horizontal=True)
+        is_tiff = input_mode == "原始 TIFF 模式"
+        auxiliary = target = ""
+        auxiliary_ms = auxiliary_hs = target_ms = ""
+        crop_profile = "yre_legacy_test_v1"
+        ms_row = ms_col = window_height = window_width = hs_row = hs_col = None
+        if not is_tiff:
+            auxiliary = st.text_input("辅助时相 H5", value=_env_default("RSFUSION_AUX_H5"))
+            target = st.text_input("目标时相 H5", value=_env_default("RSFUSION_TARGET_H5"))
+        else:
+            auxiliary_ms = st.text_input("辅助时相 MS TIFF", value=_env_default("RSFUSION_AUX_MS_TIFF"))
+            auxiliary_hs = st.text_input("辅助时相 HS TIFF", value=_env_default("RSFUSION_AUX_HS_TIFF"))
+            target_ms = st.text_input("目标时相 MS TIFF", value=_env_default("RSFUSION_TARGET_MS_TIFF"))
+            crop_profile = st.selectbox(
+                "裁剪窗口",
+                ("yre_legacy_test_v1", "custom"),
+                format_func=lambda value: "YRE 原始测试窗口"
+                if value == "yre_legacy_test_v1"
+                else "自定义窗口",
+            )
+            if crop_profile == "custom":
+                ms_row = int(st.number_input("MS 起始行", min_value=0, value=0, step=3))
+                ms_col = int(st.number_input("MS 起始列", min_value=0, value=360, step=3))
+                window_height = int(st.number_input("MS 窗口高", min_value=3, value=540, step=3))
+                window_width = int(st.number_input("MS 窗口宽", min_value=3, value=540, step=3))
+                hs_row = int(st.number_input("HS 起始行", min_value=0, value=0))
+                hs_col = int(st.number_input("HS 起始列", min_value=0, value=120))
         checkpoint = st.text_input("Checkpoint", value=_env_default("RSFUSION_CHECKPOINT"))
         model_python = st.text_input(
             "模型 Conda Python",
@@ -199,28 +340,61 @@ def _build_config(st: Any) -> UiRunConfig:
         llm_model = st.text_input("模型 ID", value=_env_default("RSFUSION_LLM_MODEL"))
         base_url = st.text_input("兼容 API Base URL", value=_env_default("RSFUSION_LLM_BASE_URL"))
         device = st.selectbox("推理设备", ("cuda", "auto", "cpu"))
-        patch_index = st.number_input("Patch Index", min_value=0, value=0, step=1)
+        patch_index = st.number_input("Patch Index", min_value=0, value=0, step=1) if not is_tiff else 0
+        patch_size = (
+            st.number_input("TIFF 推理 Patch 尺寸", min_value=3, value=180, step=3)
+            if is_tiff
+            else 180
+        )
+        row_offset = (
+            st.number_input("TIFF Patch 起始行（相对裁剪窗口）", min_value=0, value=0, step=3)
+            if is_tiff
+            else 0
+        )
+        col_offset = (
+            st.number_input("TIFF Patch 起始列（相对裁剪窗口）", min_value=0, value=0, step=3)
+            if is_tiff
+            else 0
+        )
         timeout_seconds = st.number_input("融合超时（秒）", min_value=30, value=600, step=30)
         preflight_timeout = st.number_input("预检超时（秒）", min_value=10, value=60, step=10)
         runtime_retries = st.selectbox("原生崩溃额外重试次数", (0, 1, 2), index=1)
 
     request = st.text_area(
         "自然语言任务",
-        value="请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。",
+        value=(
+            "请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。"
+            if not is_tiff
+            else "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
+        ),
         height=110,
     )
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return UiRunConfig(
         request=request,
-        auxiliary_h5_path=Path(auxiliary),
-        target_h5_path=Path(target),
         checkpoint_path=Path(checkpoint),
         model_python=Path(model_python),
         output_dir=Path(output_root) / f"ui_run_{timestamp}",
+        input_mode="tiff" if is_tiff else "h5",
+        auxiliary_h5_path=Path(auxiliary) if auxiliary else None,
+        target_h5_path=Path(target) if target else None,
+        auxiliary_ms_path=Path(auxiliary_ms) if auxiliary_ms else None,
+        auxiliary_hs_path=Path(auxiliary_hs) if auxiliary_hs else None,
+        target_ms_path=Path(target_ms) if target_ms else None,
+        crop_profile=crop_profile,
+        ms_row_offset=ms_row,
+        ms_col_offset=ms_col,
+        window_height=window_height,
+        window_width=window_width,
+        hs_row_offset=hs_row,
+        hs_col_offset=hs_col,
         provider=provider,
         llm_model=llm_model or None,
         base_url=base_url or None,
         patch_index=int(patch_index),
+        patch_size=int(patch_size),
+        row_offset=int(row_offset),
+        col_offset=int(col_offset),
         device=device,
         timeout_seconds=int(timeout_seconds),
         preflight_timeout_seconds=int(preflight_timeout),
@@ -270,6 +444,8 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         columns[0].metric("PSNR", f"{metrics.get('psnr', 0):.4f}")
         columns[1].metric("SAM", f"{metrics.get('sam', 0):.4f}")
         columns[2].metric("SSIM", f"{metrics.get('ssim', 0):.4f}")
+    elif fusion.get("metrics_status"):
+        st.info("TIFF 模式：" + str(fusion["metrics_status"]))
 
     runtime = fusion.get("runtime") or {}
     if runtime.get("attempt_count", 1) > 1:
@@ -312,14 +488,30 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
             column.image(str(path), caption=title, use_container_width=True)
 
     st.subheader("本地结果文件")
-    for name in ("report.md", "preflight.json", "agent_result.json", "metrics.json"):
+    for name in (
+        "report.md",
+        "preflight.json",
+        "agent_result.json",
+        "metrics.json",
+        "run_manifest.json",
+        "predicted_hs.tif",
+        "rgb_preview.png",
+    ):
         path = output_dir / name
         if path.is_file():
             st.download_button(
                 label=f"下载 {name}",
                 data=path.read_bytes(),
                 file_name=name,
-                mime="application/json" if name.endswith(".json") else "text/markdown",
+                mime=(
+                    "application/json"
+                    if name.endswith(".json")
+                    else "image/tiff"
+                    if name.endswith(".tif")
+                    else "image/png"
+                    if name.endswith(".png")
+                    else "text/markdown"
+                ),
             )
     with st.expander("查看 agent_result.json"):
         st.json(result)

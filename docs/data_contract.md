@@ -69,7 +69,7 @@ This output is suitable for regression against the existing test script, not for
 GIS positioning. The later TIFF adapter must inherit CRS and transform from the
 target-time MS raster and define the restored radiometric scale explicitly.
 
-## Raw-TIFF metadata preflight (V0.6)
+## Raw-TIFF metadata preflight
 
 `rsfusion inspect-tiff-triplet` is a read-only prerequisite for the future adapter.
 It accepts `auxiliary_ms`, `auxiliary_hs`, and `target_ms` TIFF files and expects:
@@ -84,10 +84,12 @@ It accepts `auxiliary_ms`, `auxiliary_hs`, and `target_ms` TIFF files and expect
 It returns `is_ready_for_preprocessing`, `blocking_issues`, and non-blocking warnings.
 It intentionally does not inspect pixel registration or create HDF5.
 
-## Raw-TIFF single-patch inference (V0.7)
+## Raw-TIFF single-patch inference
 
 `rsfusion infer-tiff` uses the same preflight and then accepts one high-resolution
-target-MS window. The MS windows have shape `[4, 180, 180]`; its corresponding
+target-MS window. For source TIFFs with known coordinate offsets, it must be called with
+a prior `crop_manifest.json`; the manifest is the explicit source-pixel correspondence
+authorization. The MS windows have shape `[4, 180, 180]`; its corresponding
 auxiliary-HS window has shape `[151, 60, 60]` and is bilinearly upsampled to
 `[151, 180, 180]`, matching the historical `Database.py` input preparation.
 
@@ -97,7 +99,7 @@ route. The output `predicted_hs.tif` inherits CRS and the window transform from 
 MS. Because the input contract has no target-time HS reference, no full-reference metrics
 or SAM heatmap can be produced.
 
-## Raw-TIFF crop windows (V0.8)
+## Raw-TIFF crop windows and manifest alignment
 
 `rsfusion crop-tiff-triplet` writes a reproducible, native-grid crop triplet and a
 `crop_manifest.json`. Its default `yre_legacy_test_v1` profile is taken directly from
@@ -111,9 +113,9 @@ HS (auxiliary):            rows [0:180], columns [120:300]
 The `custom` profile accepts MS row/column offset plus height/width, and optional
 independent HS row/column offset. MS dimensions must be divisible by three; the default
 HS dimensions are derived by dividing MS dimensions by three. Cropping preserves each
-source raster's own transform and CRS, so it makes no registration claim. A later,
-explicit alignment adapter must consume the crop manifest before the strict raw-TIFF
-inference route can use a misaligned source triplet.
+source raster's own transform and CRS, so it makes no registration claim. V1 consumes the
+crop manifest as an explicit alignment mode for one TIFF patch; it never estimates a
+transform, reprojects a raster, or declares the source images geometrically registered.
 
 ## Explicitly unsupported in V1
 
@@ -123,7 +125,7 @@ inference route can use a misaligned source triplet.
 - 100-band HZW profile
 - Whole-scene overlap and stitching
 - Training or checkpoint optimization
-- Inference without the legacy HDF5 ground-truth channels
+- Full-reference raw-TIFF metrics without a target-HS reference
 
 ## Future adapter boundary
 

@@ -6,6 +6,7 @@ from rasterio.transform import from_origin
 
 from rsfusion_agent.agent.tiff_workflow import TiffFusionRequest, YRE151TiffPatchAgent
 from rsfusion_agent.tools.model_runtime import ModelRuntimeResult
+from rsfusion_agent.tools.tiff_crop import CUSTOM_PROFILE, crop_tiff_triplet
 from rsfusion_agent.tools.tiff_patch import prepare_tiff_patch
 
 
@@ -103,3 +104,45 @@ def test_tiff_workflow_writes_georeferenced_prediction_without_metrics(tmp_path:
         assert (dataset.count, dataset.height, dataset.width) == (151, 6, 6)
         assert dataset.crs.to_string() == "EPSG:4326"
         assert tuple(dataset.transform)[:6] == (0.5, 0.0, 123.0, 0.0, -0.5, 28.5)
+
+
+def test_tiff_workflow_accepts_explicit_crop_manifest(tmp_path: Path) -> None:
+    auxiliary_ms, auxiliary_hs, target_ms = _create_triplet(tmp_path)
+    crop = crop_tiff_triplet(
+        auxiliary_ms,
+        auxiliary_hs,
+        target_ms,
+        tmp_path / "crops",
+        profile=CUSTOM_PROFILE,
+        ms_row_offset=0,
+        ms_col_offset=0,
+        window_height=6,
+        window_width=6,
+        hs_row_offset=0,
+        hs_col_offset=0,
+    )
+
+    def fake_runtime(**kwargs: object) -> ModelRuntimeResult:
+        output_npz = Path(str(kwargs["output_npz"]))
+        prediction = np.full((151, 6, 6), 0.5, dtype=np.float32)
+        np.savez_compressed(output_npz, predicted_hs=prediction)
+        return ModelRuntimeResult(
+            output_npz=str(output_npz),
+            prediction_shape=list(prediction.shape),
+            runtime_seconds=0.01,
+            checkpoint_epoch=200,
+            device="cpu",
+        )
+
+    result = YRE151TiffPatchAgent(runtime_runner=fake_runtime).run(
+        TiffFusionRequest(
+            crop_manifest_path=Path(crop.manifest_path),
+            checkpoint_path=tmp_path / "checkpoint.pth",
+            model_python=tmp_path / "python.exe",
+            output_dir=tmp_path / "outputs",
+            patch_size=6,
+        )
+    )
+
+    assert result.spatial_metadata.alignment_mode == "explicit_crop_manifest"
+    assert "crop manifest authorizes" in " ".join(result.warnings)

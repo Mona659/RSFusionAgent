@@ -14,7 +14,11 @@ from rasterio import Affine
 from rsfusion_agent.agent.state import ToolTrace
 from rsfusion_agent.tools.artifacts import save_prediction_tiff, save_rgb_preview, write_json
 from rsfusion_agent.tools.model_runtime import ModelRuntimeResult, run_yre151_runtime
-from rsfusion_agent.tools.tiff_patch import TiffPatchSpatialMetadata, prepare_tiff_patch
+from rsfusion_agent.tools.tiff_patch import (
+    TiffPatchSpatialMetadata,
+    prepare_tiff_patch,
+    prepare_tiff_patch_from_manifest,
+)
 from rsfusion_agent.tools.tiff_triplet import TiffTripletInspection
 
 T = TypeVar("T")
@@ -24,9 +28,10 @@ RuntimeRunner = Callable[..., ModelRuntimeResult]
 class TiffFusionRequest(BaseModel):
     """Request for one raw TIFF crop. It intentionally has no target HS reference."""
 
-    auxiliary_ms_path: Path
-    auxiliary_hs_path: Path
-    target_ms_path: Path
+    auxiliary_ms_path: Path | None = None
+    auxiliary_hs_path: Path | None = None
+    target_ms_path: Path | None = None
+    crop_manifest_path: Path | None = None
     checkpoint_path: Path
     model_python: Path
     output_dir: Path
@@ -92,18 +97,38 @@ class YRE151TiffPatchAgent:
         output_dir.mkdir(parents=True, exist_ok=True)
         intermediate_dir.mkdir(parents=True, exist_ok=True)
 
-        prepared = self._step(
-            "prepare_tiff_patch",
-            "Validated TIFF metadata, read one aligned crop and normalized model inputs.",
-            lambda: prepare_tiff_patch(
+        if request.crop_manifest_path is not None:
+            prepared = self._step(
+                "prepare_manifest_tiff_patch",
+                "Validated the configured crop manifest and prepared one authorized TIFF patch.",
+                lambda: prepare_tiff_patch_from_manifest(
+                    request.crop_manifest_path,
+                    patch_size=request.patch_size,
+                    row_offset=request.row_offset,
+                    col_offset=request.col_offset,
+                ),
+            )
+        else:
+            if None in (
                 request.auxiliary_ms_path,
                 request.auxiliary_hs_path,
                 request.target_ms_path,
-                patch_size=request.patch_size,
-                row_offset=request.row_offset,
-                col_offset=request.col_offset,
-            ),
-        )
+            ):
+                raise ValueError(
+                    "Raw TIFF inference requires either a crop manifest or all three TIFF paths"
+                )
+            prepared = self._step(
+                "prepare_tiff_patch",
+                "Validated TIFF metadata, read one aligned crop and normalized model inputs.",
+                lambda: prepare_tiff_patch(
+                    request.auxiliary_ms_path,
+                    request.auxiliary_hs_path,
+                    request.target_ms_path,
+                    patch_size=request.patch_size,
+                    row_offset=request.row_offset,
+                    col_offset=request.col_offset,
+                ),
+            )
         input_npz = self._step(
             "write_model_input",
             "Persisted normalized TIFF-derived inputs for the isolated PyTorch runtime.",
@@ -178,6 +203,7 @@ class YRE151TiffPatchAgent:
             "request": request.model_dump(mode="json"),
             "inspection": prepared.inspection.model_dump(mode="json"),
             "spatial_metadata": prepared.spatial_metadata.model_dump(mode="json"),
+            "crop_manifest_path": prepared.crop_manifest_path,
             "runtime": runtime.model_dump(mode="json"),
             "metrics_status": "unavailable_without_target_hs_reference",
             "artifacts": artifacts,

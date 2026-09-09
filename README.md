@@ -4,10 +4,10 @@
 
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
-> **V1 scope:** YRE reduced-resolution profile, 151 HS bands, preprocessed HDF5
-> inputs and one test patch. V0.8 additionally provides reproducible native TIFF crop
-> windows, including the legacy YRE test window. TIFF-to-HDF5 conversion, registration,
-> and whole-scene stitching are reserved for later versions.
+> **V1.0 scope:** YRE reduced-resolution profile, 151 HS bands and one test patch.
+> It supports both legacy HDF5 evaluation and one raw TIFF crop authorized by a
+> traceable source-pixel manifest. TIFF-to-HDF5 conversion, automatic registration and
+> whole-scene stitching are reserved for later versions.
 
 ## What V1 does
 
@@ -17,7 +17,9 @@ model to manipulate image arrays:
 ```mermaid
 flowchart LR
     A["YRE HDF5 pair"] --> B["HDF5 inspector"]
-    B --> C["Patch adapter"]
+    T["T1 MS + T1 HS + T2 MS TIFF"] --> W["Crop manifest"]
+    W --> C["TIFF patch adapter"]
+    B --> C
     C --> D["Traceable agent state"]
     D --> E["Isolated PyTorch runtime"]
     E --> F["DC-STSF CUDA inference"]
@@ -38,10 +40,10 @@ flowchart TD
     P -->|"ready"| A["Qwen tool-calling agent"]
     P -->|"failed"| X["Stop before LLM billing"]
     A --> T["Strict local tool allowlist"]
-    T --> I["Inspect configured YRE H5 pair"]
+    T --> I["Inspect configured H5 or TIFF crop manifest"]
     T --> R["Run one authorized DC-STSF patch"]
     R --> C["Isolated Conda + CUDA process"]
-    C --> O["TIFF, metrics, report and previews"]
+    C --> O["TIFF, metrics when available, report and previews"]
     O --> J["agent_result / run_manifest / preflight JSON"]
     J --> H["Local run-history viewer"]
 ```
@@ -106,12 +108,12 @@ known legacy limitations.
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
 - [x] Validate three original TIFF inputs before preprocessing (metadata only)
 - [x] Crop a raw TIFF triplet with a traceable YRE-legacy or custom source-pixel window
-- [x] Run one aligned raw-TIFF crop and preserve target-MS georeferencing in output
+- [x] Run one crop-manifest authorized raw-TIFF patch and preserve target-MS georeferencing
 - [ ] Convert TIFF triplet to the legacy HDF5 profile
 - [ ] Validate pixel-level registration and geospatial alignment
 - [ ] Perform overlapping whole-scene inference and weighted stitching
-- [x] Add optional LLM planning with strict function tools
-- [x] Provide a local Streamlit demo with metrics, previews and result downloads
+- [x] Add strict Qwen tool plans for H5 and crop-manifest TIFF inputs
+- [x] Provide a local Streamlit H5/TIFF demo with previews and result downloads
 - [x] Reload a prior local run without another LLM request
 - [x] Retry only the known Windows native fast-fail once and record attempts
 - [x] Run Ruff and pytest in GitHub Actions
@@ -129,7 +131,8 @@ RSFusionAgent/
 │   │   ├── yre_sam_heatmap.png
 │   │   └── yre_metrics.json
 │   ├── data_contract.md
-│   └── demo_script.md
+│   ├── demo_script.md
+│   └── v1_release.md
 ├── src/rsfusion_agent/
 │   ├── agent/
 │   │   ├── llm_client.py
@@ -137,6 +140,7 @@ RSFusionAgent/
 │   │   ├── llm_tools.py
 │   │   ├── llm_workflow.py
 │   │   ├── state.py
+│   │   ├── tiff_workflow.py
 │   │   └── workflow.py
 │   ├── models/
 │   │   └── dc_stsf.py
@@ -149,7 +153,10 @@ RSFusionAgent/
 │   │   ├── h5_patch.py
 │   │   ├── metrics.py
 │   │   ├── model_runtime.py
-│   │   └── raster_inspector.py
+│   │   ├── raster_inspector.py
+│   │   ├── tiff_crop.py
+│   │   ├── tiff_patch.py
+│   │   └── tiff_triplet.py
 │   ├── ui/
 │   │   └── streamlit_app.py
 │   └── cli.py
@@ -280,9 +287,9 @@ rsfusion crop-tiff-triplet `
   --pretty
 ```
 
-The crop manifest records the correspondence assumption. It is not a registration
-result: the strict `infer-tiff` route will continue to reject rasters whose CRS/bounds
-do not align until an explicit alignment adapter is added.
+The crop manifest records the correspondence assumption. It is not automatic
+registration; it is the explicit source-pixel pairing you approved. Use that manifest
+for raw YRE inference rather than passing the still-offset source TIFFs directly.
 
 ## Run one raw-TIFF crop (no reference metrics)
 
@@ -296,9 +303,7 @@ $checkpoint = "C:\\path\\to\\checkpoints\\model-epochs200.pth"
 $modelPython = "C:\\path\\to\\model-env\\Scripts\\python.exe"
 
 rsfusion infer-tiff `
-  --aux-ms $auxMsTif `
-  --aux-hs $auxHsTif `
-  --target-ms $targetMsTif `
+  --crop-manifest "outputs\\yre_legacy_crop\\crop_manifest.json" `
   --checkpoint $checkpoint `
   --model-python $modelPython `
   --patch-size 180 `
@@ -309,9 +314,10 @@ rsfusion infer-tiff `
   --pretty
 ```
 
-`row-offset` and `col-offset` are high-resolution MS pixel offsets and must be divisible
-by 3. The raw-TIFF route requires only `T1 MS + T1 HS + T2 MS`; as it has no T2 HS
-reference, full-reference metrics and the SAM heatmap are intentionally unavailable.
+`row-offset` and `col-offset` are high-resolution MS pixel offsets relative to the crop
+window and must be divisible by 3. The raw-TIFF route requires only `T1 MS + T1 HS +
+T2 MS`; as it has no T2 HS reference, full-reference metrics and the SAM heatmap are
+intentionally unavailable.
 
 ## Run V1 inference
 
@@ -347,17 +353,17 @@ outputs/yre_patch_0001/
     └── model_output.npz
 ```
 
-V1 intentionally reproduces the legacy TIFF convention: normalized `float32`
-values, a synthetic transform and no CRS. This is recorded as a warning in the run
-manifest. A future raw-TIFF adapter will preserve target-MS geospatial metadata.
+The H5 route intentionally reproduces the legacy TIFF convention: normalized `float32`
+values, a synthetic transform and no CRS. In contrast, the crop-manifest TIFF route
+preserves the target-MS crop CRS and transform.
 
 ## Run the natural-language agent (optional)
 
 V0.2 implements the standard
 [OpenAI Responses API function-calling loop](https://developers.openai.com/api/docs/guides/function-calling).
-The LLM can select only three strict-schema tools: inspect the configured HDF5 pair,
-run one configured patch, and read the latest result. Local paths cannot be supplied
-or changed by the model.
+The LLM can select only three strict-schema tools per mode: inspect the configured HDF5
+pair or crop manifest, run one configured patch, and read the latest result. Local paths,
+crop windows and model settings cannot be supplied or changed by the model.
 
 For the Qwen-compatible endpoint that you have already verified, set the generic
 provider variables in the current terminal. Do not put a real key in source code,
@@ -406,11 +412,30 @@ By default, `agent` runs the same free local preflight before it constructs an L
 client. The result is saved as `<output-dir>/preflight.json`; if preflight fails, no
 model request is made. `--skip-preflight` is reserved for troubleshooting.
 
+For a crop-manifest TIFF run, use the parallel `agent-tiff` entrypoint. It has the same
+preflight, bounded tool loop, provider settings and local result record, but it reports
+`metrics_status` instead of inventing reference metrics:
+
+```powershell
+rsfusion agent-tiff `
+  --request "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件和指标可用性" `
+  --provider qwen `
+  --crop-manifest "outputs\yre_legacy_crop\crop_manifest.json" `
+  --checkpoint $checkpoint `
+  --model-python $modelPython `
+  --patch-size 180 `
+  --device cuda `
+  --output-dir "outputs\llm_tiff_patch_0001" `
+  --pretty
+```
+
 ## Run the local visual demo
 
-V0.3 provides a local Streamlit interface for configuring one H5 patch, checking the
-model environment, running the Qwen agent and viewing the result cards, tool trace,
-RGB preview and SAM heatmap. Install the optional UI dependency once:
+The local Streamlit interface supports both H5 evaluation and raw TIFF modes. TIFF mode
+collects `T1 MS + T1 HS + T2 MS`, uses the legacy YRE or a custom source-pixel crop window,
+creates a local crop manifest, then invokes `agent-tiff`. H5 mode shows reference metrics
+and a SAM heatmap; TIFF mode correctly labels those metrics as unavailable without target HS.
+Install the optional UI dependency once:
 
 ```powershell
 python -m pip install -e ".[dev,llm,ui]"
@@ -424,9 +449,9 @@ rsfusion-ui
 ```
 
 The page opens locally in your browser. It never asks for or stores an API key; the
-key remains in the terminal environment. It invokes the existing `rsfusion agent`
-workflow, so the runtime preflight, tool allowlist, output isolation and result JSON
-records remain active.
+key remains in the terminal environment. It invokes the existing `rsfusion agent` or
+`rsfusion agent-tiff` workflow, so the runtime preflight, tool allowlist, output isolation
+and result JSON records remain active.
 
 V0.4 adds a local run-history selector: reopen an existing `agent_result.json` from
 the configured output root without calling the LLM again. The UI and CLI also default
@@ -437,6 +462,7 @@ troubleshooting. Path, CUDA, H5 validation and timeout failures are never retrie
 blindly; the Agent receives a safe error category and recommended action instead.
 
 For a concise local interview demonstration, follow [docs/demo_script.md](docs/demo_script.md).
+The verified release boundary and deferred work are in [docs/v1_release.md](docs/v1_release.md).
 
 ## Tests
 
