@@ -852,7 +852,9 @@ def _render_crop_result(st: Any, execution: UiCropExecution | None, config: UiRu
             column.image(preview, caption=band_label, use_container_width=True)
 
 
-def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> None:
+def _render_result(
+    st: Any, execution: UiAgentExecution, output_dir: Path, config: UiRunConfig
+) -> None:
     result = execution.result
     if result is None:
         st.error("Agent 未生成可解析的 agent_result.json。")
@@ -897,6 +899,27 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
             path = resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key=artifact_key)
             if path:
                 column.image(str(path), caption=title, use_container_width=True)
+    crop_manifest_path = resolve_result_artifact(
+        visual_result, output_dir=output_dir, artifact_key="crop_manifest"
+    )
+    if crop_manifest_path is not None:
+        try:
+            prepared_crop, crop_cards = _load_selected_tiff_patch_cards(crop_manifest_path, config)
+        except (FileNotFoundError, ValueError) as exc:
+            st.warning(f"Agent 裁剪 Patch 预览生成失败：{exc}")
+        else:
+            selection = prepared_crop.selection
+            st.subheader("Agent 裁剪后的可融合 Patch")
+            st.caption(
+                f"共 {selection.total_patch_count} 个测试块；当前为 Patch "
+                f"{selection.patch_index}，row={selection.row_offset}, "
+                f"col={selection.col_offset}。"
+            )
+            crop_columns = st.columns(len(crop_cards))
+            for column, (title, preview, band_label) in zip(
+                crop_columns, crop_cards, strict=True
+            ):
+                column.image(preview, caption=f"{title} · {band_label}", use_container_width=True)
     input_specs = [
         ("T1 MS 输入测试块", "input_auxiliary_ms_preview"),
         ("T1 HS 输入测试块", "input_auxiliary_hs_preview"),
@@ -1070,7 +1093,7 @@ def _render_stage_records(st: Any, config: UiRunConfig) -> Path | None:
         label = f"{record.completed_at:%H:%M:%S} · {record.title}"
         with st.expander(label, expanded=index == 0):
             if record.stage == "agent":
-                _render_result(st, record.payload, record.output_dir or Path("."))
+                _render_result(st, record.payload, record.output_dir or Path("."), config)
                 current_output_dir = record.output_dir
             elif record.stage == "crop":
                 _render_crop_result(st, record.payload, config)
