@@ -102,6 +102,28 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
     )
 
 
+def test_build_tiff_agent_command_can_authorize_raw_tools_without_a_crop_manifest(
+    tmp_path: Path,
+) -> None:
+    config = UiRunConfig(
+        request="仅检查原始 TIFF 并显示 RGB",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-raw",
+        input_mode="tiff",
+        auxiliary_ms_path=tmp_path / "aux_ms.tif",
+        auxiliary_hs_path=tmp_path / "aux_hs.tif",
+        target_ms_path=tmp_path / "target_ms.tif",
+        experiment_mode="real",
+    )
+
+    command = build_agent_command(config, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-tiff"]
+    assert command[command.index("--aux-ms") + 1] == str(tmp_path / "aux_ms.tif")
+    assert "--crop-manifest" not in command
+
+
 def test_crop_reuse_key_changes_when_crop_authorization_changes(tmp_path: Path) -> None:
     base = UiRunConfig(
         request="融合",

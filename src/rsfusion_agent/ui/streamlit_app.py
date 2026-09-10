@@ -177,15 +177,21 @@ def build_agent_command(config: UiRunConfig, *, python_executable: str | None = 
             ]
         )
     elif config.input_mode == "tiff":
-        if config.crop_manifest_path is None:
-            raise ValueError("TIFF mode requires a generated crop manifest")
+        if None in (config.auxiliary_ms_path, config.auxiliary_hs_path, config.target_ms_path):
+            raise ValueError("TIFF mode requires auxiliary MS/HS and target MS paths")
         command.extend(
             [
                 "agent-tiff",
                 "--request",
                 config.request,
-                "--crop-manifest",
-                str(config.crop_manifest_path),
+                "--aux-ms",
+                str(config.auxiliary_ms_path),
+                "--aux-hs",
+                str(config.auxiliary_hs_path),
+                "--target-ms",
+                str(config.target_ms_path),
+                "--crop-profile",
+                config.crop_profile,
                 "--experiment-mode",
                 config.experiment_mode,
                 "--patch-size",
@@ -198,6 +204,21 @@ def build_agent_command(config: UiRunConfig, *, python_executable: str | None = 
                 str(config.col_offset),
             ]
         )
+        if config.crop_manifest_path is not None:
+            command.extend(("--crop-manifest", str(config.crop_manifest_path)))
+        if config.target_hs_reference_path is not None:
+            command.extend(("--target-hs-reference", str(config.target_hs_reference_path)))
+        if config.crop_profile == "custom":
+            for option, value in (
+                ("--ms-row-offset", config.ms_row_offset),
+                ("--ms-col-offset", config.ms_col_offset),
+                ("--window-height", config.window_height),
+                ("--window-width", config.window_width),
+                ("--hs-row-offset", config.hs_row_offset),
+                ("--hs-col-offset", config.hs_col_offset),
+            ):
+                if value is not None:
+                    command.extend((option, str(value)))
     else:
         raise ValueError(f"Unsupported UI input mode: {config.input_mode}")
     command.extend(
@@ -394,7 +415,8 @@ def resolve_result_artifact(
         return None
 
     output_root = output_dir.resolve()
-    path = (output_dir / candidate).resolve() if Path(candidate).name == candidate else Path(candidate).resolve()
+    candidate_path = Path(candidate)
+    path = (output_dir / candidate_path).resolve() if not candidate_path.is_absolute() else candidate_path.resolve()
     try:
         path.relative_to(output_root)
     except ValueError:
@@ -402,33 +424,35 @@ def resolve_result_artifact(
     return path if path.is_file() else None
 
 
+def collect_agent_artifacts(result: dict[str, Any]) -> dict[str, str]:
+    """Collect safe, output-directory-local artifact names from all completed tool calls."""
+
+    artifacts: dict[str, str] = {}
+    for trace_item in result.get("trace") or []:
+        tool_artifacts = (trace_item.get("output") or {}).get("artifacts") or {}
+        if isinstance(tool_artifacts, dict):
+            artifacts.update(
+                {key: value for key, value in tool_artifacts.items() if isinstance(value, str)}
+            )
+    fusion = result.get("fusion_result") or {}
+    fusion_artifacts = fusion.get("artifacts") or {}
+    if isinstance(fusion_artifacts, dict):
+        artifacts.update(
+            {key: value for key, value in fusion_artifacts.items() if isinstance(value, str)}
+        )
+    input_previews = fusion.get("input_preview_paths") or {}
+    if isinstance(input_previews, dict):
+        artifacts.update(
+            {key: value for key, value in input_previews.items() if isinstance(value, str)}
+        )
+    return artifacts
+
+
 def run_agent_from_ui(config: UiRunConfig) -> UiAgentExecution:
     """Execute the CLI so UI and terminal runs share exactly one workflow."""
 
-    active_config = config
-    if config.input_mode == "tiff" and config.crop_manifest_path is None:
-        crop = subprocess.run(
-            build_crop_command(config),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=config.timeout_seconds,
-            env=os.environ.copy(),
-        )
-        if crop.returncode != 0:
-            return UiAgentExecution(
-                return_code=crop.returncode,
-                stdout=crop.stdout,
-                stderr=crop.stderr,
-                result_path=config.output_dir / "agent_result.json",
-                result=None,
-            )
-        active_config = replace(
-            config, crop_manifest_path=config.output_dir / "prepared_crop" / "crop_manifest.json"
-        )
     completed = subprocess.run(
-        build_agent_command(active_config),
+        build_agent_command(config),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -838,7 +862,7 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
 
     status = result.get("status", "unknown")
     if status == "completed":
-        st.success("Agent 已完成融合任务。")
+        st.success("Agent 已完成当前自然语言任务。")
     else:
         st.warning(f"Agent 已结束，状态：{status}")
         for item in reversed(result.get("trace") or []):
@@ -848,15 +872,38 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
                 st.caption(f"建议：{diagnosis.get('recommended_action', '')}")
                 break
 
-    _render_preflight(st, result.get("runtime_preflight"))
+    called_tools = {str(item.get("name")) for item in result.get("trace") or []}
+    if "get_runtime_preflight" in called_tools or any(
+        name.startswith("run_yre151") for name in called_tools
+    ):
+        _render_preflight(st, result.get("runtime_preflight"))
     fusion = result.get("fusion_result") or {}
+    visual_result = {"artifacts": collect_agent_artifacts(result)}
+    raw_specs = [
+        ("T1 辅助时相 MS 原始 RGB", "raw_auxiliary_ms_rgb"),
+        ("T1 辅助时相 HS 原始 RGB", "raw_auxiliary_hs_rgb"),
+        ("T2 目标时相 MS 原始 RGB", "raw_target_ms_rgb"),
+        ("T2 目标时相 HS 原始 RGB", "raw_target_hs_reference_rgb"),
+    ]
+    raw_specs = [
+        item
+        for item in raw_specs
+        if resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key=item[1])
+    ]
+    if raw_specs:
+        st.subheader("Agent 原始 TIFF 输入检查与 RGB 可视化")
+        raw_columns = st.columns(len(raw_specs))
+        for column, (title, artifact_key) in zip(raw_columns, raw_specs, strict=True):
+            path = resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key=artifact_key)
+            if path:
+                column.image(str(path), caption=title, use_container_width=True)
     input_specs = [
         ("T1 MS 输入测试块", "input_auxiliary_ms_preview"),
         ("T1 HS 输入测试块", "input_auxiliary_hs_preview"),
         ("T2 MS 输入测试块", "input_target_ms_preview"),
     ]
     if resolve_result_artifact(
-        fusion, output_dir=output_dir, artifact_key="input_target_hs_reference_preview"
+        visual_result, output_dir=output_dir, artifact_key="input_target_hs_reference_preview"
     ):
         reference_name = (
             "T2 HS 模拟真值输入块"
@@ -867,13 +914,13 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
     available_input_specs = [
         item
         for item in input_specs
-        if resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=item[1])
+        if resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key=item[1])
     ]
     if available_input_specs:
         st.subheader("输入测试块可视化")
         input_columns = st.columns(len(available_input_specs))
         for column, (title, artifact_key) in zip(input_columns, available_input_specs, strict=True):
-            path = resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=artifact_key)
+            path = resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key=artifact_key)
             if path:
                 column.image(str(path), caption=title, use_container_width=True)
     metrics = fusion.get("metrics") or {}
@@ -924,7 +971,7 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
 
     image_specs = [("融合结果 RGB", "rgb_preview")]
     if resolve_result_artifact(
-        fusion, output_dir=output_dir, artifact_key="reference_rgb_preview"
+        visual_result, output_dir=output_dir, artifact_key="reference_rgb_preview"
     ):
         reference_title = (
             "插值伪标签 RGB（真实实验，同尺度）"
@@ -933,11 +980,11 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
             else "标签 RGB（模拟实验 / H5 真值，同尺度）"
         )
         image_specs.append((reference_title, "reference_rgb_preview"))
-    if resolve_result_artifact(fusion, output_dir=output_dir, artifact_key="sam_heatmap"):
+    if resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key="sam_heatmap"):
         image_specs.append(("SAM 热力图", "sam_heatmap"))
     image_columns = st.columns(len(image_specs))
     for column, (title, artifact_key) in zip(image_columns, image_specs, strict=True):
-        path = resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=artifact_key)
+        path = resolve_result_artifact(visual_result, output_dir=output_dir, artifact_key=artifact_key)
         if path:
             column.image(str(path), caption=title, use_container_width=True)
 
@@ -956,6 +1003,10 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         "input_auxiliary_hs_preview.png",
         "input_target_ms_preview.png",
         "input_target_hs_reference_preview.png",
+        "raw_auxiliary_ms_rgb.png",
+        "raw_auxiliary_hs_rgb.png",
+        "raw_target_ms_rgb.png",
+        "raw_target_hs_reference_rgb.png",
     ):
         path = output_dir / name
         if path.is_file():
@@ -1195,60 +1246,27 @@ def run_app() -> None:
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
-            active_config = config
-            if active_config.input_mode == "tiff" and active_config.crop_manifest_path is None:
-                crop_progress, crop_on_wait = _task_wait_reporter(
-                    st, "Agent 前置自动裁剪", active_config.timeout_seconds
+            agent_timeout = config.timeout_seconds + config.preflight_timeout_seconds + 30
+            progress, on_wait = _task_wait_reporter(st, "Agent 任务", agent_timeout)
+            try:
+                execution = run_with_elapsed(
+                    lambda: run_agent_from_ui(config),
+                    timeout_seconds=agent_timeout,
+                    on_wait=on_wait,
                 )
-                try:
-                    crop_execution = run_with_elapsed(
-                        lambda: run_crop_from_ui(active_config),
-                        timeout_seconds=active_config.timeout_seconds,
-                        on_wait=crop_on_wait,
-                    )
-                except subprocess.TimeoutExpired:
-                    st.error("裁剪超时。请检查输入文件和裁剪窗口。")
-                    crop_execution = None
-                if crop_execution is not None:
-                    st.session_state["ui_crop_execution"] = crop_execution
-                    if crop_execution.return_code == 0:
-                        st.session_state["ui_crop_reuse_key"] = current_crop_key
-                        active_config = replace(
-                            active_config, crop_manifest_path=crop_execution.manifest_path
-                        )
-                        crop_progress.progress(100, text="Agent 前置自动裁剪完成")
-                        _store_stage_record(
-                            st,
-                            stage="crop",
-                            title="TIFF 裁剪（Agent 自动执行）",
-                            payload=crop_execution,
-                        )
-                    else:
-                        st.error("自动裁剪失败，未执行 Agent 融合。")
-            if active_config.input_mode != "tiff" or active_config.crop_manifest_path is not None:
-                agent_timeout = (
-                    active_config.timeout_seconds + active_config.preflight_timeout_seconds + 30
+            except subprocess.TimeoutExpired:
+                st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
+            else:
+                st.session_state["ui_execution"] = execution
+                st.session_state["ui_output_dir"] = config.output_dir
+                progress.progress(100, text="Agent 任务完成")
+                _store_stage_record(
+                    st,
+                    stage="agent",
+                    title="Agent 自然语言任务",
+                    payload=execution,
+                    output_dir=config.output_dir,
                 )
-                progress, on_wait = _task_wait_reporter(st, "Agent 融合", agent_timeout)
-                try:
-                    execution = run_with_elapsed(
-                        lambda: run_agent_from_ui(active_config),
-                        timeout_seconds=agent_timeout,
-                        on_wait=on_wait,
-                    )
-                except subprocess.TimeoutExpired:
-                    st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
-                else:
-                    st.session_state["ui_execution"] = execution
-                    st.session_state["ui_output_dir"] = active_config.output_dir
-                    progress.progress(100, text="Agent 融合完成")
-                    _store_stage_record(
-                        st,
-                        stage="agent",
-                        title="Agent 融合",
-                        payload=execution,
-                        output_dir=active_config.output_dir,
-                    )
 
     with st.container(border=True):
         current_output_dir = _render_stage_records(st, config)

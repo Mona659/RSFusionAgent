@@ -2,7 +2,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 
 from rsfusion_agent import cli
 from rsfusion_agent.agent.llm_client import (
@@ -72,6 +75,24 @@ def _tool_turn(response_id: str, call_id: str, name: str) -> ModelTurn:
         ],
         tool_calls=[FunctionCall(call_id=call_id, name=name, arguments=arguments)],
     )
+
+
+def _write_tiff(
+    path: Path, *, bands: int, height: int, width: int, resolution: float
+) -> None:
+    values = np.arange(bands * height * width, dtype=np.float32).reshape(bands, height, width)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=bands,
+        dtype="float32",
+        transform=from_origin(100, 200, resolution, resolution),
+        crs="EPSG:32650",
+    ) as dataset:
+        dataset.write(values)
 
 
 def test_llm_agent_runs_inspect_then_inference_then_answers() -> None:
@@ -246,6 +267,53 @@ def test_tiff_toolbox_blocks_inference_before_manifest_inspection(tmp_path: Path
 
     with pytest.raises(ValueError, match="Safety gate"):
         toolbox.execute("run_yre151_tiff_fusion", {})
+
+
+def test_tiff_toolbox_inspects_authorized_raw_inputs_and_writes_rgb_previews(tmp_path: Path) -> None:
+    auxiliary_ms = tmp_path / "aux_ms.tif"
+    auxiliary_hs = tmp_path / "aux_hs.tif"
+    target_ms = tmp_path / "target_ms.tif"
+    _write_tiff(auxiliary_ms, bands=4, height=12, width=12, resolution=3)
+    _write_tiff(auxiliary_hs, bands=151, height=4, width=4, resolution=9)
+    _write_tiff(target_ms, bands=4, height=12, width=12, resolution=3)
+    output_dir = tmp_path / "output"
+    toolbox = TiffAgentToolbox(
+        TiffLLMToolContext(
+            auxiliary_ms_path=auxiliary_ms,
+            auxiliary_hs_path=auxiliary_hs,
+            target_ms_path=target_ms,
+            checkpoint_path=tmp_path / "model.pth",
+            model_python=tmp_path / "python.exe",
+            output_dir=output_dir,
+        )
+    )
+
+    result = toolbox.execute("inspect_raw_tiff_inputs", {})
+
+    assert result["ok"] is True
+    assert result["auxiliary_ms"]["band_count"] == 4
+    assert set(result["artifacts"]) == {
+        "raw_auxiliary_ms_rgb",
+        "raw_auxiliary_hs_rgb",
+        "raw_target_ms_rgb",
+    }
+    assert all((output_dir / name).is_file() for name in result["artifacts"].values())
+
+
+def test_llm_agent_blocks_unrequested_inference() -> None:
+    client = FakeResponsesClient(
+        [
+            _tool_turn("response-1", "call-1", "run_yre151_fusion"),
+            ModelTurn(response_id="response-2", output_text="仅完成检查。"),
+        ]
+    )
+    toolbox = FakeToolbox()
+
+    result = LLMFusionAgent(client=client, toolbox=toolbox).run("检查输入数据并显示 RGB")
+
+    assert result.status == "completed_with_tool_errors"
+    assert result.trace[0].status == "failed"
+    assert toolbox.calls == []
 
 
 def test_toolbox_redacts_configured_paths_from_errors(tmp_path: Path) -> None:

@@ -452,6 +452,12 @@ The UI retains the latest input-check, preflight, crop and fusion result for the
 session. These stage records are shown newest first, so running fusion does not hide the crop
 preview. A successful crop manifest is reused only while its TIFF paths, experiment type, crop
 window and run directory still match; fusion therefore does not execute the crop again.
+
+The natural-language Agent exposes the same local operations through a strict allowlist:
+`inspect_raw_tiff_inputs`, `prepare_tiff_crop`, `inspect_yre151_tiff_crop`,
+`get_runtime_preflight`, `run_yre151_tiff_fusion`, and result retrieval. An input/RGB-only
+request writes and displays original TIFF previews without crop or inference. The control plane
+rejects a model-run tool call unless the request explicitly asks for fusion or inference.
 Install the optional UI dependency once:
 
 ```powershell

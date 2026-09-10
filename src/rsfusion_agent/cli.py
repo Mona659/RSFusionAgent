@@ -259,7 +259,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use natural language to run one crop-manifest TIFF fusion through allowlisted tools.",
     )
     tiff_agent_parser.add_argument("--request", required=True)
-    tiff_agent_parser.add_argument("--crop-manifest", required=True)
+    tiff_agent_parser.add_argument(
+        "--crop-manifest",
+        help="Optional existing crop manifest. Without it, the Agent can inspect raw TIFFs and create one.",
+    )
+    tiff_agent_parser.add_argument("--aux-ms")
+    tiff_agent_parser.add_argument("--aux-hs")
+    tiff_agent_parser.add_argument("--target-ms")
+    tiff_agent_parser.add_argument("--target-hs-reference")
+    tiff_agent_parser.add_argument("--crop-profile", default="yre_legacy_test_v1")
+    tiff_agent_parser.add_argument("--ms-row-offset", type=int)
+    tiff_agent_parser.add_argument("--ms-col-offset", type=int)
+    tiff_agent_parser.add_argument("--window-height", type=int)
+    tiff_agent_parser.add_argument("--window-width", type=int)
+    tiff_agent_parser.add_argument("--hs-row-offset", type=int)
+    tiff_agent_parser.add_argument("--hs-col-offset", type=int)
     tiff_agent_parser.add_argument("--checkpoint", required=True)
     tiff_agent_parser.add_argument("--output-dir", required=True)
     tiff_agent_parser.add_argument("--experiment-mode", choices=(REAL_EXPERIMENT, SIMULATION_EXPERIMENT))
@@ -468,7 +482,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "agent-tiff":
         try:
             context = TiffLLMToolContext(
-                crop_manifest_path=Path(args.crop_manifest),
+                crop_manifest_path=Path(args.crop_manifest) if args.crop_manifest else None,
+                auxiliary_ms_path=Path(args.aux_ms) if args.aux_ms else None,
+                auxiliary_hs_path=Path(args.aux_hs) if args.aux_hs else None,
+                target_ms_path=Path(args.target_ms) if args.target_ms else None,
+                target_hs_reference_path=(
+                    Path(args.target_hs_reference) if args.target_hs_reference else None
+                ),
+                crop_profile=args.crop_profile,
+                ms_row_offset=args.ms_row_offset,
+                ms_col_offset=args.ms_col_offset,
+                window_height=args.window_height,
+                window_width=args.window_width,
+                hs_row_offset=args.hs_row_offset,
+                hs_col_offset=args.hs_col_offset,
                 checkpoint_path=Path(args.checkpoint),
                 model_python=Path(args.model_python),
                 output_dir=Path(args.output_dir),
