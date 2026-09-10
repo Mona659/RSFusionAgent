@@ -31,12 +31,15 @@ class TiffCropResult(BaseModel):
     auxiliary_ms_source: RasterInspectionResult
     auxiliary_hs_source: RasterInspectionResult
     target_ms_source: RasterInspectionResult
+    target_hs_reference_source: RasterInspectionResult | None = None
     auxiliary_ms_window: CropWindow
     auxiliary_hs_window: CropWindow
     target_ms_window: CropWindow
+    target_hs_reference_window: CropWindow | None = None
     auxiliary_ms_path: str
     auxiliary_hs_path: str
     target_ms_path: str
+    target_hs_reference_path: str | None = None
     manifest_path: str
     warnings: list[str]
 
@@ -58,6 +61,11 @@ def load_crop_manifest(path: str | Path) -> TiffCropResult:
     ):
         if not Path(artifact_path).is_file():
             raise FileNotFoundError(f"{role} declared by crop manifest does not exist: {artifact_path}")
+    if result.target_hs_reference_path and not Path(result.target_hs_reference_path).is_file():
+        raise FileNotFoundError(
+            "Target HS reference crop declared by crop manifest does not exist: "
+            f"{result.target_hs_reference_path}"
+        )
     return result
 
 
@@ -150,6 +158,7 @@ def crop_tiff_triplet(
     target_ms_path: str | Path,
     output_dir: str | Path,
     *,
+    target_hs_reference_path: str | Path | None = None,
     profile: str = YRE_LEGACY_TEST_PROFILE,
     ms_row_offset: int | None = None,
     ms_col_offset: int | None = None,
@@ -163,10 +172,15 @@ def crop_tiff_triplet(
     auxiliary_ms = inspect_raster(auxiliary_ms_path)
     auxiliary_hs = inspect_raster(auxiliary_hs_path)
     target_ms = inspect_raster(target_ms_path)
+    target_hs_reference = (
+        inspect_raster(target_hs_reference_path) if target_hs_reference_path is not None else None
+    )
     if auxiliary_ms.band_count != MS_BANDS or target_ms.band_count != MS_BANDS:
         raise ValueError(f"Auxiliary and target MS inputs must each have {MS_BANDS} bands")
     if auxiliary_hs.band_count != HS_BANDS:
         raise ValueError(f"Auxiliary HS input must have {HS_BANDS} bands")
+    if target_hs_reference is not None and target_hs_reference.band_count != HS_BANDS:
+        raise ValueError(f"Target HS reference must have {HS_BANDS} bands")
     ms_window, hs_window = resolve_crop_windows(
         profile=profile,
         ms_row_offset=ms_row_offset,
@@ -179,31 +193,48 @@ def crop_tiff_triplet(
     _validate_window(auxiliary_ms, ms_window, "Auxiliary MS")
     _validate_window(target_ms, ms_window, "Target MS")
     _validate_window(auxiliary_hs, hs_window, "Auxiliary HS")
+    if target_hs_reference is not None:
+        _validate_window(target_hs_reference, hs_window, "Target HS reference")
 
     resolved_output = Path(output_dir).expanduser().resolve()
     resolved_output.mkdir(parents=True, exist_ok=True)
     auxiliary_ms_output = resolved_output / "auxiliary_ms_crop.tif"
     auxiliary_hs_output = resolved_output / "auxiliary_hs_crop.tif"
     target_ms_output = resolved_output / "target_ms_crop.tif"
+    target_hs_reference_output = (
+        resolved_output / "target_hs_reference_crop.tif" if target_hs_reference is not None else None
+    )
     _write_crop(auxiliary_ms.path, ms_window, auxiliary_ms_output)
     _write_crop(auxiliary_hs.path, hs_window, auxiliary_hs_output)
     _write_crop(target_ms.path, ms_window, target_ms_output)
+    if target_hs_reference is not None and target_hs_reference_output is not None:
+        _write_crop(target_hs_reference.path, hs_window, target_hs_reference_output)
 
     warnings = [
         "Crops preserve each source TIFF's native georeferencing. The configured pixel windows "
         "are an explicit correspondence assumption, not automatic registration or reprojection."
     ]
+    if target_hs_reference is not None:
+        warnings.append(
+            "Target HS reference is retained for legacy Database.py-style interpolated "
+            "pseudo-reference metrics; it is not claimed to be native high-resolution ground truth."
+        )
     result = TiffCropResult(
         profile=profile,
         auxiliary_ms_source=auxiliary_ms,
         auxiliary_hs_source=auxiliary_hs,
         target_ms_source=target_ms,
+        target_hs_reference_source=target_hs_reference,
         auxiliary_ms_window=ms_window,
         auxiliary_hs_window=hs_window,
         target_ms_window=ms_window,
+        target_hs_reference_window=hs_window if target_hs_reference is not None else None,
         auxiliary_ms_path=str(auxiliary_ms_output),
         auxiliary_hs_path=str(auxiliary_hs_output),
         target_ms_path=str(target_ms_output),
+        target_hs_reference_path=(
+            str(target_hs_reference_output) if target_hs_reference_output is not None else None
+        ),
         manifest_path=str(resolved_output / "crop_manifest.json"),
         warnings=warnings,
     )

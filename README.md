@@ -9,6 +9,9 @@ An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion
 > source-pixel crop authorized by a traceable manifest. Legacy HDF5 remains available
 > as a regression-evaluation route. TIFF-to-HDF5 conversion, automatic registration and
 > whole-scene stitching are reserved for later versions.
+> A second TIFF option reproduces the active `Database.py` test convention with an optional
+> `T2 HS` reference: it reports metrics against a 3× interpolated pseudo-reference, not a
+> native high-resolution ground truth image.
 
 ## What V1 does
 
@@ -111,6 +114,7 @@ known legacy limitations.
 - [x] Inspect original MS/HS TIFF size, bands, spatial metadata and bounded RGB previews before cropping
 - [x] Crop a raw TIFF triplet with a traceable YRE-legacy or custom source-pixel window
 - [x] Run one crop-manifest authorized raw-TIFF patch and preserve target-MS georeferencing
+- [x] Reproduce Database.py-style TIFF pseudo-reference metrics with an optional cropped T2 HS
 - [ ] Convert TIFF triplet to the legacy HDF5 profile
 - [ ] Validate pixel-level registration and geospatial alignment
 - [ ] Perform overlapping whole-scene inference and weighted stitching
@@ -438,6 +442,9 @@ T1 HS + T2 MS` dimensions, bands, spatial metadata and RGB previews; it then use
 YRE or a custom source-pixel crop window, creates a local crop manifest, and invokes
 `agent-tiff`. H5 is the second, regression-evaluation mode: it shows reference metrics and a
 SAM heatmap. TIFF mode correctly labels metrics as unavailable without target HS.
+For **模拟实验（复现 Database.py）**, provide `ZY2.tif.tif` as `T2 HS` reference. It is cropped
+with the HS window and bilinearly upsampled 3× for metrics, exactly as the active legacy test
+construction; the UI labels these as pseudo-reference metrics.
 Install the optional UI dependency once:
 
 ```powershell

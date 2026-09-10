@@ -309,7 +309,17 @@ class TiffAgentToolbox:
                     "auxiliary_ms": crop.auxiliary_ms_window.model_dump(),
                     "auxiliary_hs": crop.auxiliary_hs_window.model_dump(),
                     "target_ms": crop.target_ms_window.model_dump(),
+                    "target_hs_reference": (
+                        crop.target_hs_reference_window.model_dump()
+                        if crop.target_hs_reference_window is not None
+                        else None
+                    ),
                 },
+                "experiment_mode": (
+                    "legacy_database_simulation"
+                    if crop.target_hs_reference_path is not None
+                    else "real_without_target_hs_reference"
+                ),
                 "warnings": inspection.warnings,
             }
         if name == "run_yre151_tiff_fusion":
@@ -372,9 +382,14 @@ class TiffAgentToolbox:
             "checkpoint_epoch": result.runtime.checkpoint_epoch,
             "runtime_seconds": result.runtime.runtime_seconds,
             "metrics_status": result.metrics_status,
+            "metrics": result.metrics.model_dump(mode="json") if result.metrics is not None else None,
             "artifacts": {
                 "predicted_hs": Path(result.predicted_hs_path).name,
                 "rgb_preview": Path(result.rgb_preview_path).name,
+                "sam_heatmap": (
+                    Path(result.sam_heatmap_path).name if result.sam_heatmap_path else None
+                ),
+                "metrics": Path(result.metrics_path).name if result.metrics_path else None,
                 "manifest": Path(result.manifest_path).name,
                 "report": Path(result.report_path).name,
             },

@@ -10,6 +10,9 @@ for the legacy training pipeline.
    dimensions, bands, spatial metadata and bounded RGB previews, then cropped through an explicit
    `crop_manifest.json`. It produces a target-MS-georeferenced 151-band prediction TIFF
    and RGB preview. Full-reference metrics are unavailable because target HS is absent.
+   In **legacy Database.py simulation** mode, an optional `T2 HS` reference is additionally
+   cropped on the HS grid, bilinearly upsampled 3× and used to calculate pseudo-reference
+   metrics and a SAM map. It is not claimed to be native high-resolution ground truth.
 2. **HDF5 evaluation route (regression)** — one legacy `DownT1YRE.h5` + `DownT2YRE.h5`
    patch with target HS ground truth. It produces PSNR, RMSE, SAM, ERGAS, SSIM, CC, RGB and SAM map.
 

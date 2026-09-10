@@ -34,6 +34,7 @@ class PreparedTiffPatch:
     auxiliary_ms: np.ndarray
     auxiliary_hs_interpolated: np.ndarray
     target_ms: np.ndarray
+    target_hs_reference_interpolated: np.ndarray | None
     inspection: TiffTripletInspection
     spatial_metadata: TiffPatchSpatialMetadata
     row_offset: int
@@ -48,6 +49,11 @@ class PreparedTiffPatch:
             auxiliary_ms=self.auxiliary_ms,
             auxiliary_hs_interpolated=self.auxiliary_hs_interpolated,
             target_ms=self.target_ms,
+            **(
+                {"target_hs_reference_interpolated": self.target_hs_reference_interpolated}
+                if self.target_hs_reference_interpolated is not None
+                else {}
+            ),
         )
         return output
 
@@ -98,11 +104,24 @@ def inspect_manifest_crop_triplet(crop_manifest_path: str | Path) -> tuple[TiffT
     auxiliary_ms = inspect_raster(crop.auxiliary_ms_path)
     auxiliary_hs = inspect_raster(crop.auxiliary_hs_path)
     target_ms = inspect_raster(crop.target_ms_path)
+    target_hs_reference = (
+        inspect_raster(crop.target_hs_reference_path)
+        if crop.target_hs_reference_path is not None
+        else None
+    )
     issues: list[str] = []
     if auxiliary_ms.band_count != MS_BANDS or target_ms.band_count != MS_BANDS:
         issues.append(f"Manifest MS crops must each contain {MS_BANDS} bands.")
     if auxiliary_hs.band_count != HS_BANDS:
         issues.append(f"Manifest auxiliary HS crop must contain {HS_BANDS} bands.")
+    if target_hs_reference is not None:
+        if target_hs_reference.band_count != HS_BANDS:
+            issues.append(f"Manifest target HS reference crop must contain {HS_BANDS} bands.")
+        if (
+            target_hs_reference.width != auxiliary_hs.width
+            or target_hs_reference.height != auxiliary_hs.height
+        ):
+            issues.append("Manifest target HS reference crop must match auxiliary HS crop dimensions.")
     if auxiliary_ms.width != target_ms.width or auxiliary_ms.height != target_ms.height:
         issues.append("Manifest auxiliary and target MS crops must have matching dimensions.")
     if auxiliary_ms.width != auxiliary_hs.width * SCALE or auxiliary_ms.height != auxiliary_hs.height * SCALE:
@@ -143,6 +162,7 @@ def _prepare_from_inspection(
     col_offset: int,
     alignment_mode: str,
     crop_manifest_path: str | None = None,
+    target_hs_reference_path: str | None = None,
 ) -> PreparedTiffPatch:
     _validate_patch_window(
         width=inspection.target_ms.width,
@@ -176,6 +196,14 @@ def _prepare_from_inspection(
         out_height=patch_size,
         out_width=patch_size,
     )
+    target_hs_reference_interpolated = None
+    if target_hs_reference_path is not None:
+        target_hs_reference_interpolated = _read_window(
+            target_hs_reference_path,
+            low_window,
+            out_height=patch_size,
+            out_width=patch_size,
+        )
     with rasterio.open(inspection.target_ms.path) as target_dataset:
         transform = target_dataset.window_transform(high_window)
 
@@ -185,6 +213,13 @@ def _prepare_from_inspection(
             auxiliary_hs / np.float32(NORM_FACTOR), dtype=np.float32
         ),
         target_ms=np.ascontiguousarray(target_ms / np.float32(NORM_FACTOR), dtype=np.float32),
+        target_hs_reference_interpolated=(
+            np.ascontiguousarray(
+                target_hs_reference_interpolated / np.float32(NORM_FACTOR), dtype=np.float32
+            )
+            if target_hs_reference_interpolated is not None
+            else None
+        ),
         inspection=inspection,
         spatial_metadata=TiffPatchSpatialMetadata(
             crs=inspection.target_ms.crs or "",
@@ -204,6 +239,7 @@ def prepare_tiff_patch(
     auxiliary_hs_path: str | Path,
     target_ms_path: str | Path,
     *,
+    target_hs_reference_path: str | Path | None = None,
     patch_size: int = 180,
     row_offset: int = 0,
     col_offset: int = 0,
@@ -226,12 +262,21 @@ def prepare_tiff_patch(
     if not inspection.is_ready_for_preprocessing:
         details = " ".join(inspection.blocking_issues)
         raise ValueError(f"TIFF triplet is not ready for preprocessing: {details}")
+    if target_hs_reference_path is not None:
+        target_reference = inspect_raster(target_hs_reference_path)
+        if target_reference.band_count != HS_BANDS:
+            raise ValueError(f"Target HS reference must have {HS_BANDS} bands")
     return _prepare_from_inspection(
         inspection,
         patch_size=patch_size,
         row_offset=row_offset,
         col_offset=col_offset,
         alignment_mode="strict_geospatial",
+        target_hs_reference_path=(
+            str(Path(target_hs_reference_path).expanduser().resolve())
+            if target_hs_reference_path is not None
+            else None
+        ),
     )
 
 
@@ -244,7 +289,7 @@ def prepare_tiff_patch_from_manifest(
 ) -> PreparedTiffPatch:
     """Prepare one model patch from a user-authored, validated crop manifest."""
 
-    inspection, _ = inspect_manifest_crop_triplet(crop_manifest_path)
+    inspection, crop = inspect_manifest_crop_triplet(crop_manifest_path)
     return _prepare_from_inspection(
         inspection,
         patch_size=patch_size,
@@ -252,4 +297,5 @@ def prepare_tiff_patch_from_manifest(
         col_offset=col_offset,
         alignment_mode="explicit_crop_manifest",
         crop_manifest_path=str(Path(crop_manifest_path).expanduser().resolve()),
+        target_hs_reference_path=crop.target_hs_reference_path,
     )

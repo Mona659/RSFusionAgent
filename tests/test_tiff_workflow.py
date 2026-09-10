@@ -146,3 +146,43 @@ def test_tiff_workflow_accepts_explicit_crop_manifest(tmp_path: Path) -> None:
 
     assert result.spatial_metadata.alignment_mode == "explicit_crop_manifest"
     assert "crop manifest authorizes" in " ".join(result.warnings)
+
+
+def test_tiff_workflow_calculates_legacy_pseudo_reference_metrics(tmp_path: Path) -> None:
+    auxiliary_ms, auxiliary_hs, target_ms = _create_triplet(tmp_path)
+    target_hs_reference = tmp_path / "target_hs_reference.tif"
+    _write_raster(target_hs_reference, bands=151, width=4, height=4, resolution=1.5, value=6000.0)
+
+    def fake_runtime(**kwargs: object) -> ModelRuntimeResult:
+        output_npz = Path(str(kwargs["output_npz"]))
+        prediction = np.full((151, 9, 9), 0.5, dtype=np.float32)
+        np.savez_compressed(output_npz, predicted_hs=prediction)
+        return ModelRuntimeResult(
+            output_npz=str(output_npz),
+            prediction_shape=list(prediction.shape),
+            runtime_seconds=0.01,
+            checkpoint_epoch=200,
+            device="cpu",
+        )
+
+    result = YRE151TiffPatchAgent(runtime_runner=fake_runtime).run(
+        TiffFusionRequest(
+            auxiliary_ms_path=auxiliary_ms,
+            auxiliary_hs_path=auxiliary_hs,
+            target_ms_path=target_ms,
+            target_hs_reference_path=target_hs_reference,
+            checkpoint_path=tmp_path / "checkpoint.pth",
+            model_python=tmp_path / "python.exe",
+            output_dir=tmp_path / "outputs",
+            patch_size=9,
+            row_offset=0,
+            col_offset=0,
+        )
+    )
+
+    assert result.metrics_status == "available_legacy_interpolated_target_hs_reference"
+    assert result.metrics is not None
+    assert result.metrics_path is not None
+    assert result.sam_heatmap_path is not None
+    assert Path(result.metrics_path).is_file()
+    assert Path(result.sam_heatmap_path).is_file()

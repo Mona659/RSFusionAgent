@@ -67,6 +67,8 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
         auxiliary_ms_path=tmp_path / "aux_ms.tif",
         auxiliary_hs_path=tmp_path / "aux_hs.tif",
         target_ms_path=tmp_path / "target_ms.tif",
+        target_hs_reference_path=tmp_path / "target_hs.tif",
+        experiment_mode="simulation",
         crop_profile="custom",
         ms_row_offset=0,
         ms_col_offset=360,
@@ -86,6 +88,9 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
     assert crop_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "crop-tiff-triplet"]
     assert crop_command[crop_command.index("--profile") + 1] == "custom"
     assert crop_command[crop_command.index("--hs-col-offset") + 1] == "120"
+    assert crop_command[crop_command.index("--target-hs-reference") + 1] == str(
+        tmp_path / "target_hs.tif"
+    )
 
 
 def test_inspect_raw_tiff_inputs_returns_metadata_and_rgb_previews(tmp_path: Path) -> None:

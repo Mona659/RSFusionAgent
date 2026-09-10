@@ -26,6 +26,8 @@ class UiRunConfig:
     auxiliary_ms_path: Path | None = None
     auxiliary_hs_path: Path | None = None
     target_ms_path: Path | None = None
+    target_hs_reference_path: Path | None = None
+    experiment_mode: str = "real"
     crop_manifest_path: Path | None = None
     crop_profile: str = "yre_legacy_test_v1"
     ms_row_offset: int | None = None
@@ -59,6 +61,17 @@ class UiAgentExecution:
 
 
 @dataclass(frozen=True)
+class UiCropExecution:
+    """Result of running the explicit crop stage without invoking the LLM."""
+
+    return_code: int
+    stdout: str
+    stderr: str
+    manifest_path: Path
+    result: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
 class UiRunHistoryItem:
     """One locally persisted agent result available for display without a rerun."""
 
@@ -72,13 +85,15 @@ class UiRunHistoryItem:
 class RawTiffInputCheck:
     """Metadata and compact RGB previews collected before TIFF cropping."""
 
-    source_paths: tuple[Path, Path, Path]
+    source_paths: tuple[Path, ...]
     auxiliary_ms: dict[str, Any]
     auxiliary_hs: dict[str, Any]
     target_ms: dict[str, Any]
+    target_hs_reference: dict[str, Any] | None
     auxiliary_ms_rgb: Any
     auxiliary_hs_rgb: Any
     target_ms_rgb: Any
+    target_hs_reference_rgb: Any | None
     is_ready_for_preprocessing: bool
     blocking_issues: list[str]
     warnings: list[str]
@@ -176,6 +191,10 @@ def build_crop_command(config: UiRunConfig, *, python_executable: str | None = N
         config.crop_profile,
         "--pretty",
     ]
+    if config.experiment_mode == "simulation":
+        if config.target_hs_reference_path is None:
+            raise ValueError("模拟实验需要提供目标时相 HS 参考 TIFF")
+        command.extend(("--target-hs-reference", str(config.target_hs_reference_path)))
     if config.crop_profile == "custom":
         required = (
             config.ms_row_offset,
@@ -213,6 +232,8 @@ def inspect_raw_tiff_inputs(
         raise ValueError("Raw TIFF input checks are only available in TIFF mode")
     if None in (config.auxiliary_ms_path, config.auxiliary_hs_path, config.target_ms_path):
         raise ValueError("TIFF mode requires auxiliary MS/HS and target MS paths")
+    if config.experiment_mode == "simulation" and config.target_hs_reference_path is None:
+        raise ValueError("模拟实验需要提供目标时相 HS 参考 TIFF")
 
     from rsfusion_agent.tools.raster_preview import render_raster_rgb
     from rsfusion_agent.tools.tiff_triplet import inspect_tiff_triplet
@@ -221,11 +242,25 @@ def inspect_raw_tiff_inputs(
     auxiliary_hs_path = config.auxiliary_hs_path.resolve()
     target_ms_path = config.target_ms_path.resolve()
     inspection = inspect_tiff_triplet(auxiliary_ms_path, auxiliary_hs_path, target_ms_path)
+    target_hs_reference = None
+    target_hs_reference_rgb = None
+    if config.target_hs_reference_path is not None:
+        from rsfusion_agent.tools.raster_inspector import inspect_raster
+
+        target_hs_reference_path = config.target_hs_reference_path.resolve()
+        target_hs_reference = inspect_raster(target_hs_reference_path).model_dump(mode="json")
+        target_hs_reference_rgb = render_raster_rgb(
+            target_hs_reference_path, bands=(28, 18, 9), max_dimension=preview_max_dimension
+        )
+    source_paths = (auxiliary_ms_path, auxiliary_hs_path, target_ms_path)
+    if config.target_hs_reference_path is not None:
+        source_paths = (*source_paths, config.target_hs_reference_path.resolve())
     return RawTiffInputCheck(
-        source_paths=(auxiliary_ms_path, auxiliary_hs_path, target_ms_path),
+        source_paths=source_paths,
         auxiliary_ms=inspection.auxiliary_ms.model_dump(mode="json"),
         auxiliary_hs=inspection.auxiliary_hs.model_dump(mode="json"),
         target_ms=inspection.target_ms.model_dump(mode="json"),
+        target_hs_reference=target_hs_reference,
         auxiliary_ms_rgb=render_raster_rgb(
             auxiliary_ms_path, bands=(2, 1, 0), max_dimension=preview_max_dimension
         ),
@@ -235,6 +270,7 @@ def inspect_raw_tiff_inputs(
         target_ms_rgb=render_raster_rgb(
             target_ms_path, bands=(2, 1, 0), max_dimension=preview_max_dimension
         ),
+        target_hs_reference_rgb=target_hs_reference_rgb,
         is_ready_for_preprocessing=inspection.is_ready_for_preprocessing,
         blocking_issues=inspection.blocking_issues,
         warnings=inspection.warnings,
@@ -347,6 +383,30 @@ def run_agent_from_ui(config: UiRunConfig) -> UiAgentExecution:
     )
 
 
+def run_crop_from_ui(config: UiRunConfig) -> UiCropExecution:
+    """Run only the explicit TIFF crop stage, without preflight, model or LLM costs."""
+
+    if config.input_mode != "tiff":
+        raise ValueError("仅原始 TIFF 模式支持显式裁剪")
+    completed = subprocess.run(
+        build_crop_command(config),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=config.timeout_seconds,
+        env=os.environ.copy(),
+    )
+    manifest_path = config.output_dir / "prepared_crop" / "crop_manifest.json"
+    return UiCropExecution(
+        return_code=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        manifest_path=manifest_path,
+        result=load_json_object(manifest_path),
+    )
+
+
 def _env_default(name: str, fallback: str = "") -> str:
     return os.environ.get(name, fallback)
 
@@ -354,86 +414,126 @@ def _env_default(name: str, fallback: str = "") -> str:
 def _build_config(st: Any) -> UiRunConfig:
     """Render configuration fields and return the current local-only run config."""
 
+    if "ui_run_id" not in st.session_state:
+        st.session_state["ui_run_id"] = datetime.now().strftime("%Y%m%d_%H%M%S")
     with st.sidebar:
         st.header("运行配置")
-        input_mode = st.radio("输入模式", ("原始 TIFF 模式", "H5 演示模式"), horizontal=True)
-        is_tiff = input_mode == "原始 TIFF 模式"
         auxiliary = target = ""
-        auxiliary_ms = auxiliary_hs = target_ms = ""
+        auxiliary_ms = auxiliary_hs = target_ms = target_hs_reference = ""
+        experiment_mode = "real"
         crop_profile = "yre_legacy_test_v1"
         ms_row = ms_col = window_height = window_width = hs_row = hs_col = None
-        if not is_tiff:
-            auxiliary = st.text_input("辅助时相 H5", value=_env_default("RSFUSION_AUX_H5"))
-            target = st.text_input("目标时相 H5", value=_env_default("RSFUSION_TARGET_H5"))
-        else:
-            auxiliary_ms = st.text_input("辅助时相 MS TIFF", value=_env_default("RSFUSION_AUX_MS_TIFF"))
-            auxiliary_hs = st.text_input("辅助时相 HS TIFF", value=_env_default("RSFUSION_AUX_HS_TIFF"))
-            target_ms = st.text_input("目标时相 MS TIFF", value=_env_default("RSFUSION_TARGET_MS_TIFF"))
-            crop_profile = st.selectbox(
-                "裁剪窗口",
-                ("yre_legacy_test_v1", "custom"),
-                format_func=lambda value: "YRE 原始测试窗口"
-                if value == "yre_legacy_test_v1"
-                else "自定义窗口",
+        with st.expander("① 输入数据", expanded=True):
+            input_mode = st.radio("输入模式", ("原始 TIFF 模式", "H5 演示模式"), horizontal=True)
+            is_tiff = input_mode == "原始 TIFF 模式"
+            if not is_tiff:
+                auxiliary = st.text_input("辅助时相 H5", value=_env_default("RSFUSION_AUX_H5"))
+                target = st.text_input("目标时相 H5", value=_env_default("RSFUSION_TARGET_H5"))
+            else:
+                experiment = st.radio(
+                    "实验类型",
+                    ("真实实验（无 T2 HS 真值）", "模拟实验（复现 Database.py）"),
+                )
+                experiment_mode = "simulation" if experiment.startswith("模拟") else "real"
+                auxiliary_ms = st.text_input(
+                    "T1 辅助时相 MS TIFF", value=_env_default("RSFUSION_AUX_MS_TIFF")
+                )
+                auxiliary_hs = st.text_input(
+                    "T1 辅助时相 HS TIFF", value=_env_default("RSFUSION_AUX_HS_TIFF")
+                )
+                target_ms = st.text_input(
+                    "T2 目标时相 MS TIFF", value=_env_default("RSFUSION_TARGET_MS_TIFF")
+                )
+                if experiment_mode == "simulation":
+                    target_hs_reference = st.text_input(
+                        "T2 目标时相 HS 参考 TIFF（如 ZY2）",
+                        value=_env_default("RSFUSION_TARGET_HS_REFERENCE_TIFF"),
+                    )
+                    st.caption("按原 Database.py：T2 HS 裁剪后线性插值 3 倍，作为伪真值评测。")
+        if is_tiff:
+            with st.expander("② 裁剪参数", expanded=True):
+                crop_profile = st.selectbox(
+                    "裁剪窗口方案",
+                    ("yre_legacy_test_v1", "custom"),
+                    format_func=lambda value: "YRE 原始测试窗口"
+                    if value == "yre_legacy_test_v1"
+                    else "自定义窗口",
+                )
+                if crop_profile == "yre_legacy_test_v1":
+                    st.caption("MS：起始行 0、起始列 360、大小 540 × 540")
+                    st.caption("HS（T1 与 T2）：起始行 0、起始列 120、大小 180 × 180")
+                else:
+                    st.caption("MS 与 HS 分别使用各自原始像素网格；HS 默认对应 MS 的 1/3。")
+                    ms_left, ms_right = st.columns(2)
+                    ms_row = int(ms_left.number_input("MS 起始行", min_value=0, value=0, step=3))
+                    ms_col = int(ms_right.number_input("MS 起始列", min_value=0, value=360, step=3))
+                    window_height = int(ms_left.number_input("MS 裁剪高度", min_value=3, value=540, step=3))
+                    window_width = int(ms_right.number_input("MS 裁剪宽度", min_value=3, value=540, step=3))
+                    hs_left, hs_right = st.columns(2)
+                    hs_row = int(hs_left.number_input("HS 起始行", min_value=0, value=0))
+                    hs_col = int(hs_right.number_input("HS 起始列", min_value=0, value=120))
+                    st.caption("HS 裁剪大小自动为 MS 高度/宽度的 1/3。")
+        with st.expander("③ 模型与执行", expanded=True):
+            checkpoint = st.text_input("Checkpoint", value=_env_default("RSFUSION_CHECKPOINT"))
+            model_python = st.text_input(
+                "模型 Conda Python",
+                value=_env_default("RSFUSION_MODEL_PYTHON", sys.executable),
             )
-            if crop_profile == "custom":
-                ms_row = int(st.number_input("MS 起始行", min_value=0, value=0, step=3))
-                ms_col = int(st.number_input("MS 起始列", min_value=0, value=360, step=3))
-                window_height = int(st.number_input("MS 窗口高", min_value=3, value=540, step=3))
-                window_width = int(st.number_input("MS 窗口宽", min_value=3, value=540, step=3))
-                hs_row = int(st.number_input("HS 起始行", min_value=0, value=0))
-                hs_col = int(st.number_input("HS 起始列", min_value=0, value=120))
-        checkpoint = st.text_input("Checkpoint", value=_env_default("RSFUSION_CHECKPOINT"))
-        model_python = st.text_input(
-            "模型 Conda Python",
-            value=_env_default("RSFUSION_MODEL_PYTHON", sys.executable),
-        )
-        output_root = st.text_input("输出根目录", value="outputs/ui_runs")
-        provider = st.selectbox("LLM Provider", ("qwen", "openai", "deepseek", "custom"))
-        llm_model = st.text_input("模型 ID", value=_env_default("RSFUSION_LLM_MODEL"))
-        base_url = st.text_input("兼容 API Base URL", value=_env_default("RSFUSION_LLM_BASE_URL"))
-        device = st.selectbox("推理设备", ("cuda", "auto", "cpu"))
-        patch_index = st.number_input("Patch Index", min_value=0, value=0, step=1) if not is_tiff else 0
-        patch_size = (
-            st.number_input("TIFF 推理 Patch 尺寸", min_value=3, value=180, step=3)
-            if is_tiff
-            else 180
-        )
-        row_offset = (
-            st.number_input("TIFF Patch 起始行（相对裁剪窗口）", min_value=0, value=0, step=3)
-            if is_tiff
-            else 0
-        )
-        col_offset = (
-            st.number_input("TIFF Patch 起始列（相对裁剪窗口）", min_value=0, value=0, step=3)
-            if is_tiff
-            else 0
-        )
-        timeout_seconds = st.number_input("融合超时（秒）", min_value=30, value=600, step=30)
-        preflight_timeout = st.number_input("预检超时（秒）", min_value=10, value=60, step=10)
-        runtime_retries = st.selectbox("原生崩溃额外重试次数", (0, 1, 2), index=1)
+            provider = st.selectbox("LLM Provider", ("qwen", "openai", "deepseek", "custom"))
+            llm_model = st.text_input("模型 ID", value=_env_default("RSFUSION_LLM_MODEL"))
+            base_url = st.text_input("兼容 API Base URL", value=_env_default("RSFUSION_LLM_BASE_URL"))
+            device = st.selectbox("推理设备", ("cuda", "auto", "cpu"))
+            patch_index = (
+                st.number_input("Patch Index", min_value=0, value=0, step=1) if not is_tiff else 0
+            )
+            patch_size = (
+                st.number_input("TIFF 推理 Patch 尺寸", min_value=3, value=180, step=3)
+                if is_tiff
+                else 180
+            )
+            row_offset = (
+                st.number_input("Patch 起始行（相对裁剪结果）", min_value=0, value=0, step=3)
+                if is_tiff
+                else 0
+            )
+            col_offset = (
+                st.number_input("Patch 起始列（相对裁剪结果）", min_value=0, value=0, step=3)
+                if is_tiff
+                else 0
+            )
+            timeout_seconds = st.number_input("融合超时（秒）", min_value=30, value=600, step=30)
+            preflight_timeout = st.number_input("预检超时（秒）", min_value=10, value=60, step=10)
+            runtime_retries = st.selectbox("原生崩溃额外重试次数", (0, 1, 2), index=1)
+        with st.expander("④ 输出目录", expanded=True):
+            output_root = st.text_input("输出根目录", value="outputs/ui_runs")
+            st.caption(f"当前运行目录：ui_run_{st.session_state['ui_run_id']}")
 
     request = st.text_area(
         "自然语言任务",
         value=(
             "请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。"
             if not is_tiff
-            else "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
+            else (
+                "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标。"
+                if experiment_mode == "simulation"
+                else "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
+            )
         ),
         height=110,
     )
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return UiRunConfig(
         request=request,
         checkpoint_path=Path(checkpoint),
         model_python=Path(model_python),
-        output_dir=Path(output_root) / f"ui_run_{timestamp}",
+        output_dir=Path(output_root) / f"ui_run_{st.session_state['ui_run_id']}",
         input_mode="tiff" if is_tiff else "h5",
         auxiliary_h5_path=Path(auxiliary) if auxiliary else None,
         target_h5_path=Path(target) if target else None,
         auxiliary_ms_path=Path(auxiliary_ms) if auxiliary_ms else None,
         auxiliary_hs_path=Path(auxiliary_hs) if auxiliary_hs else None,
         target_ms_path=Path(target_ms) if target_ms else None,
+        target_hs_reference_path=Path(target_hs_reference) if target_hs_reference else None,
+        experiment_mode=experiment_mode,
         crop_profile=crop_profile,
         ms_row_offset=ms_row,
         ms_col_offset=ms_col,
@@ -486,12 +586,21 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
     for warning in result.warnings:
         st.caption(f"提示：{warning}")
 
-    columns = st.columns(3)
-    cards = (
+    cards: list[tuple[str, dict[str, Any], Any, str]] = [
         ("辅助时相 MS", result.auxiliary_ms, result.auxiliary_ms_rgb, "RGB：波段 3 / 2 / 1"),
         ("辅助时相 HS", result.auxiliary_hs, result.auxiliary_hs_rgb, "RGB：波段 29 / 19 / 10"),
         ("目标时相 MS", result.target_ms, result.target_ms_rgb, "RGB：波段 3 / 2 / 1"),
-    )
+    ]
+    if result.target_hs_reference is not None and result.target_hs_reference_rgb is not None:
+        cards.append(
+            (
+                "目标时相 HS 参考（伪真值）",
+                result.target_hs_reference,
+                result.target_hs_reference_rgb,
+                "RGB：波段 29 / 19 / 10",
+            )
+        )
+    columns = st.columns(len(cards))
     for column, (title, metadata, preview, band_label) in zip(columns, cards, strict=True):
         column.markdown(f"#### {title}")
         column.metric("原始尺寸", f"{metadata['width']} × {metadata['height']}")
@@ -502,6 +611,36 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
         column.image(preview, caption=band_label, use_container_width=True)
         with column.expander("查看完整元数据"):
             column.json(metadata)
+
+
+def _render_crop_result(st: Any, execution: UiCropExecution | None) -> None:
+    """Show only the deterministic preprocessing result, separate from fusion output."""
+
+    if execution is None:
+        return
+    st.subheader("裁剪结果")
+    if execution.return_code != 0 or execution.result is None:
+        st.error("裁剪失败。")
+        with st.expander("裁剪命令输出"):
+            st.code(execution.stderr or execution.stdout or "No output")
+        return
+    st.success("裁剪完成，已生成可追溯的 crop_manifest.json。")
+    windows = {
+        "T1 MS": execution.result.get("auxiliary_ms_window"),
+        "T1 HS": execution.result.get("auxiliary_hs_window"),
+        "T2 MS": execution.result.get("target_ms_window"),
+        "T2 HS 参考": execution.result.get("target_hs_reference_window"),
+    }
+    st.dataframe(
+        [
+            {"数据": name, **window}
+            for name, window in windows.items()
+            if isinstance(window, dict)
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(f"清单：{execution.manifest_path}")
 
 
 def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> None:
@@ -528,6 +667,8 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
     fusion = result.get("fusion_result") or {}
     metrics = fusion.get("metrics") or {}
     if metrics:
+        if fusion.get("metrics_status") == "available_legacy_interpolated_target_hs_reference":
+            st.warning("以下指标基于 Database.py 复现的插值伪真值，不等同于原生高分辨率真值。")
         st.subheader("融合指标")
         columns = st.columns(3)
         columns[0].metric("PSNR", f"{metrics.get('psnr', 0):.4f}")
@@ -585,6 +726,7 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         "run_manifest.json",
         "predicted_hs.tif",
         "rgb_preview.png",
+        "sam_heatmap.png",
     ):
         path = output_dir / name
         if path.is_file():
@@ -643,23 +785,55 @@ def run_app() -> None:
     config = _build_config(st)
     _render_history_selector(st, config.output_dir.parent)
 
+    previous_crop = st.session_state.get("ui_crop_execution")
+    if (
+        config.input_mode == "tiff"
+        and isinstance(previous_crop, UiCropExecution)
+        and previous_crop.return_code == 0
+        and previous_crop.manifest_path.is_file()
+    ):
+        config = replace(config, crop_manifest_path=previous_crop.manifest_path)
+
+    st.subheader("功能操作")
+    progress = st.progress(
+        int(st.session_state.get("ui_progress", 0)),
+        text=str(st.session_state.get("ui_progress_text", "等待操作")),
+    )
     if config.input_mode == "tiff":
-        check_col, preflight_col, run_col = st.columns(3)
+        check_col, preflight_col, crop_col, run_col = st.columns(4)
         if check_col.button("检查原始 TIFF 输入", use_container_width=True):
             try:
                 st.session_state["raw_tiff_input_check"] = inspect_raw_tiff_inputs(config)
             except (FileNotFoundError, RuntimeError, ValueError) as exc:
                 st.error(str(exc))
+            else:
+                st.session_state["ui_progress"] = 25
+                st.session_state["ui_progress_text"] = "原始 TIFF 输入检查完成"
+                progress.progress(25, text="原始 TIFF 输入检查完成")
+        if crop_col.button("执行裁剪", use_container_width=True):
+            progress.progress(35, text="正在按配置窗口裁剪原始 TIFF...")
+            try:
+                crop_execution = run_crop_from_ui(replace(config, crop_manifest_path=None))
+            except subprocess.TimeoutExpired:
+                st.error("裁剪超时。请检查输入文件和裁剪窗口。")
+            else:
+                st.session_state["ui_crop_execution"] = crop_execution
+                if crop_execution.return_code == 0:
+                    st.session_state["ui_progress"] = 50
+                    st.session_state["ui_progress_text"] = "裁剪完成，可执行 Agent 融合"
+                    progress.progress(50, text="裁剪完成，可执行 Agent 融合")
         current_paths = (
             config.auxiliary_ms_path.resolve() if config.auxiliary_ms_path else None,
             config.auxiliary_hs_path.resolve() if config.auxiliary_hs_path else None,
             config.target_ms_path.resolve() if config.target_ms_path else None,
         )
+        if config.target_hs_reference_path is not None:
+            current_paths = (*current_paths, config.target_hs_reference_path.resolve())
         raw_input_check = st.session_state.get("raw_tiff_input_check")
-        if raw_input_check and raw_input_check.source_paths == current_paths:
-            _render_raw_tiff_input_check(st, raw_input_check)
     else:
         preflight_col, run_col = st.columns(2)
+        raw_input_check = None
+        current_paths = ()
     if preflight_col.button("预检模型环境", use_container_width=True):
         from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 
@@ -674,25 +848,56 @@ def run_app() -> None:
             st.error(str(exc))
         else:
             st.session_state["ui_preflight"] = result.model_dump(mode="json")
+            st.session_state["ui_progress"] = 50
+            st.session_state["ui_progress_text"] = "模型环境预检完成"
+            progress.progress(50, text="模型环境预检完成")
 
     if run_col.button("执行 Agent 融合", type="primary", use_container_width=True):
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
-            with st.spinner("正在执行预检、Agent 工具调用和本地融合，请勿关闭页面..."):
+            active_config = config
+            if active_config.input_mode == "tiff" and active_config.crop_manifest_path is None:
+                progress.progress(20, text="正在自动执行裁剪...")
                 try:
-                    execution = run_agent_from_ui(config)
+                    crop_execution = run_crop_from_ui(active_config)
+                except subprocess.TimeoutExpired:
+                    st.error("裁剪超时。请检查输入文件和裁剪窗口。")
+                    crop_execution = None
+                if crop_execution is not None:
+                    st.session_state["ui_crop_execution"] = crop_execution
+                    if crop_execution.return_code == 0:
+                        active_config = replace(
+                            active_config, crop_manifest_path=crop_execution.manifest_path
+                        )
+                        progress.progress(45, text="裁剪完成，正在调用 Agent 与本地模型...")
+                    else:
+                        st.error("自动裁剪失败，未执行 Agent 融合。")
+            if active_config.input_mode != "tiff" or active_config.crop_manifest_path is not None:
+                progress.progress(60, text="正在执行预检、Agent 工具调用和本地融合...")
+                try:
+                    execution = run_agent_from_ui(active_config)
                 except subprocess.TimeoutExpired:
                     st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
                 else:
                     st.session_state["ui_execution"] = execution
-                    st.session_state["ui_output_dir"] = config.output_dir
+                    st.session_state["ui_output_dir"] = active_config.output_dir
+                    st.session_state["ui_progress"] = 100
+                    st.session_state["ui_progress_text"] = "Agent 融合完成"
+                    progress.progress(100, text="Agent 融合完成")
 
-    _render_preflight(st, st.session_state.get("ui_preflight"))
     execution = st.session_state.get("ui_execution")
     output_dir = st.session_state.get("ui_output_dir")
-    if execution and output_dir:
-        _render_result(st, execution, output_dir)
+    with st.container(border=True):
+        st.subheader("运行结果")
+        if raw_input_check and raw_input_check.source_paths == current_paths:
+            _render_raw_tiff_input_check(st, raw_input_check)
+        if config.input_mode == "tiff":
+            _render_crop_result(st, st.session_state.get("ui_crop_execution"))
+        if execution and output_dir:
+            _render_result(st, execution, output_dir)
+        else:
+            _render_preflight(st, st.session_state.get("ui_preflight"))
 
 
 def main() -> None:

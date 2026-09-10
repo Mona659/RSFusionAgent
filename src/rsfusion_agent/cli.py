@@ -99,6 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
     crop_tiff_parser.add_argument("--aux-ms", required=True)
     crop_tiff_parser.add_argument("--aux-hs", required=True)
     crop_tiff_parser.add_argument("--target-ms", required=True)
+    crop_tiff_parser.add_argument(
+        "--target-hs-reference",
+        help="Optional target-time HS reference for legacy Database.py-style pseudo-reference metrics.",
+    )
     crop_tiff_parser.add_argument("--output-dir", required=True)
     crop_tiff_parser.add_argument(
         "--profile",
@@ -168,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     infer_tiff_parser.add_argument("--aux-ms")
     infer_tiff_parser.add_argument("--aux-hs")
     infer_tiff_parser.add_argument("--target-ms")
+    infer_tiff_parser.add_argument("--target-hs-reference")
     infer_tiff_parser.add_argument(
         "--crop-manifest",
         help="Use three TIFF crops declared by a prior crop-tiff-triplet manifest.",
@@ -310,6 +315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.aux_hs,
                 args.target_ms,
                 args.output_dir,
+                target_hs_reference_path=args.target_hs_reference,
                 profile=args.profile,
                 ms_row_offset=args.ms_row_offset,
                 ms_col_offset=args.ms_col_offset,
@@ -379,6 +385,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     auxiliary_ms_path=Path(args.aux_ms) if args.aux_ms else None,
                     auxiliary_hs_path=Path(args.aux_hs) if args.aux_hs else None,
                     target_ms_path=Path(args.target_ms) if args.target_ms else None,
+                    target_hs_reference_path=(
+                        Path(args.target_hs_reference) if args.target_hs_reference else None
+                    ),
                     crop_manifest_path=Path(args.crop_manifest) if args.crop_manifest else None,
                     checkpoint_path=Path(args.checkpoint),
                     model_python=Path(args.model_python),

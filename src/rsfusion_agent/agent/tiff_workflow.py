@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field
 from rasterio import Affine
 
 from rsfusion_agent.agent.state import ToolTrace
-from rsfusion_agent.tools.artifacts import save_prediction_tiff, save_rgb_preview, write_json
+from rsfusion_agent.tools.artifacts import (
+    save_prediction_tiff,
+    save_rgb_preview,
+    save_sam_heatmap,
+    write_json,
+)
+from rsfusion_agent.tools.metrics import FusionMetrics, calculate_metrics, calculate_sam_map
 from rsfusion_agent.tools.model_runtime import ModelRuntimeResult, run_yre151_runtime
 from rsfusion_agent.tools.tiff_patch import (
     TiffPatchSpatialMetadata,
@@ -26,11 +32,12 @@ RuntimeRunner = Callable[..., ModelRuntimeResult]
 
 
 class TiffFusionRequest(BaseModel):
-    """Request for one raw TIFF crop. It intentionally has no target HS reference."""
+    """Request for one raw TIFF crop, optionally with a legacy target-HS reference."""
 
     auxiliary_ms_path: Path | None = None
     auxiliary_hs_path: Path | None = None
     target_ms_path: Path | None = None
+    target_hs_reference_path: Path | None = None
     crop_manifest_path: Path | None = None
     checkpoint_path: Path
     model_python: Path
@@ -51,8 +58,11 @@ class TiffFusionResult(BaseModel):
     spatial_metadata: TiffPatchSpatialMetadata
     runtime: ModelRuntimeResult
     metrics_status: str
+    metrics: FusionMetrics | None = None
     predicted_hs_path: str
     rgb_preview_path: str
+    sam_heatmap_path: str | None = None
+    metrics_path: str | None = None
     manifest_path: str
     report_path: str
     trace: list[ToolTrace]
@@ -60,7 +70,7 @@ class TiffFusionResult(BaseModel):
 
 
 class YRE151TiffPatchAgent:
-    """Run one metadata-validated raw TIFF crop without unavailable reference metrics."""
+    """Run one metadata-validated raw TIFF crop with optional legacy reference metrics."""
 
     def __init__(self, runtime_runner: RuntimeRunner = run_yre151_runtime) -> None:
         self.runtime_runner = runtime_runner
@@ -124,6 +134,7 @@ class YRE151TiffPatchAgent:
                     request.auxiliary_ms_path,
                     request.auxiliary_hs_path,
                     request.target_ms_path,
+                    target_hs_reference_path=request.target_hs_reference_path,
                     patch_size=request.patch_size,
                     row_offset=request.row_offset,
                     col_offset=request.col_offset,
@@ -187,16 +198,50 @@ class YRE151TiffPatchAgent:
         )
 
         warnings = list(prepared.inspection.warnings)
-        warnings.append(
-            "No target-time HS reference was supplied, so PSNR, RMSE, SAM, ERGAS, SSIM, "
-            "CC and the SAM heatmap are unavailable for raw-TIFF inference."
-        )
+        metrics: FusionMetrics | None = None
+        sam_heatmap_path: Path | None = None
+        metrics_path: Path | None = None
+        if prepared.target_hs_reference_interpolated is None:
+            metrics_status = "unavailable_without_target_hs_reference"
+            warnings.append(
+                "No target-time HS reference was supplied, so PSNR, RMSE, SAM, ERGAS, SSIM, "
+                "CC and the SAM heatmap are unavailable for raw-TIFF inference."
+            )
+        else:
+            metrics_status = "available_legacy_interpolated_target_hs_reference"
+            warnings.append(
+                "Metrics use a target-HS reference cropped at native HS resolution and bilinearly "
+                "upsampled by three, reproducing the active Database.py test construction. "
+                "It is an interpolated pseudo-reference, not native high-resolution ground truth."
+            )
+            metrics = self._step(
+                "calculate_legacy_reference_metrics",
+                "Calculated six full-reference metrics against the interpolated target-HS reference.",
+                lambda: calculate_metrics(prepared.target_hs_reference_interpolated, prediction),
+            )
+            sam_heatmap_path = self._step(
+                "render_reference_sam_heatmap",
+                "Rendered the SAM heatmap against the interpolated target-HS reference.",
+                lambda: save_sam_heatmap(
+                    calculate_sam_map(prepared.target_hs_reference_interpolated, prediction),
+                    output_dir / "sam_heatmap.png",
+                ),
+            )
+            metrics_path = self._step(
+                "save_reference_metrics",
+                "Saved legacy pseudo-reference metrics as JSON.",
+                lambda: write_json(metrics.model_dump(mode="json"), output_dir / "metrics.json"),
+            )
         artifacts = {
             "predicted_hs": str(predicted_hs_path),
             "rgb_preview": str(rgb_preview_path),
             "model_input": str(input_npz),
             "model_output": str(runtime_output),
         }
+        if sam_heatmap_path is not None:
+            artifacts["sam_heatmap"] = str(sam_heatmap_path)
+        if metrics_path is not None:
+            artifacts["metrics"] = str(metrics_path)
         manifest_data: dict[str, Any] = {
             "status": "completed",
             "profile": "yre151_tiff_single_patch_v1",
@@ -205,7 +250,8 @@ class YRE151TiffPatchAgent:
             "spatial_metadata": prepared.spatial_metadata.model_dump(mode="json"),
             "crop_manifest_path": prepared.crop_manifest_path,
             "runtime": runtime.model_dump(mode="json"),
-            "metrics_status": "unavailable_without_target_hs_reference",
+            "metrics_status": metrics_status,
+            "metrics": metrics.model_dump(mode="json") if metrics is not None else None,
             "artifacts": artifacts,
             "trace": [step.model_dump(mode="json") for step in self.trace],
             "warnings": warnings,
@@ -213,7 +259,7 @@ class YRE151TiffPatchAgent:
         manifest_path = write_json(manifest_data, output_dir / "run_manifest.json")
         report_path = output_dir / "report.md"
         report_path.write_text(
-            self._build_report(runtime, artifacts, warnings), encoding="utf-8"
+            self._build_report(runtime, artifacts, warnings, metrics_status, metrics), encoding="utf-8"
         )
         return TiffFusionResult(
             status="completed",
@@ -221,9 +267,12 @@ class YRE151TiffPatchAgent:
             inspection=prepared.inspection,
             spatial_metadata=prepared.spatial_metadata,
             runtime=runtime,
-            metrics_status="unavailable_without_target_hs_reference",
+            metrics_status=metrics_status,
+            metrics=metrics,
             predicted_hs_path=str(predicted_hs_path),
             rgb_preview_path=str(rgb_preview_path),
+            sam_heatmap_path=str(sam_heatmap_path) if sam_heatmap_path is not None else None,
+            metrics_path=str(metrics_path) if metrics_path is not None else None,
             manifest_path=str(manifest_path),
             report_path=str(report_path),
             trace=self.trace,
@@ -235,6 +284,8 @@ class YRE151TiffPatchAgent:
         runtime: ModelRuntimeResult,
         artifacts: dict[str, str],
         warnings: list[str],
+        metrics_status: str,
+        metrics: FusionMetrics | None,
     ) -> str:
         artifact_rows = "\n".join(f"- `{name}`: `{path}`" for name, path in artifacts.items())
         warning_rows = "\n".join(f"- {warning}" for warning in warnings)
@@ -244,6 +295,12 @@ class YRE151TiffPatchAgent:
             f"- Device: `{runtime.device}`\n"
             f"- Checkpoint epoch: `{runtime.checkpoint_epoch}`\n"
             f"- Model runtime: `{runtime.runtime_seconds:.6f} s`\n"
-            "- Metrics: unavailable without target-time HS reference\n\n"
-            f"## Artifacts\n\n{artifact_rows}\n\n## Warnings\n\n{warning_rows}\n"
+            f"- Metrics status: `{metrics_status}`\n"
+            + (
+                "- Metrics: "
+                f"PSNR {metrics.psnr:.4f}, SAM {metrics.sam:.4f}, SSIM {metrics.ssim:.4f}\n\n"
+                if metrics is not None
+                else "- Metrics: unavailable without target-time HS reference\n\n"
+            )
+            + f"## Artifacts\n\n{artifact_rows}\n\n## Warnings\n\n{warning_rows}\n"
         )
