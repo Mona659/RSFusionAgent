@@ -39,6 +39,7 @@ class FusionRunResult(BaseModel):
     metrics: FusionMetrics
     predicted_hs_path: str
     rgb_preview_path: str
+    reference_rgb_preview_path: str
     sam_heatmap_path: str
     metrics_path: str
     manifest_path: str

@@ -108,7 +108,7 @@ known legacy limitations.
 - [x] Load and normalize one reduced-resolution test patch
 - [x] Run the DC-STSF checkpoint in an isolated PyTorch environment
 - [x] Calculate PSNR, RMSE, SAM, ERGAS, SSIM and CC
-- [x] Save a 151-band prediction TIFF, RGB preview and SAM heatmap
+- [x] Save a 151-band prediction TIFF, prediction/reference RGB comparison and SAM heatmap
 - [x] Save machine-readable metrics, tool trace and Markdown report
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
 - [x] Inspect original MS/HS TIFF size, bands, spatial metadata and bounded RGB previews before cropping
@@ -350,6 +350,7 @@ Generated artifacts:
 outputs/yre_patch_0001/
 ├── predicted_hs.tif
 ├── rgb_preview.png
+├── reference_rgb_preview.png
 ├── sam_heatmap.png
 ├── metrics.json
 ├── report.md
@@ -444,7 +445,15 @@ YRE or a custom source-pixel crop window, creates a local crop manifest, and inv
 SAM heatmap. TIFF mode correctly labels metrics as unavailable without target HS.
 For **模拟实验（复现 Database.py）**, provide `ZY2.tif.tif` as `T2 HS` reference. It is cropped
 with the HS window and bilinearly upsampled 3× for metrics, exactly as the active legacy test
-construction; the UI labels these as pseudo-reference metrics.
+construction; the UI labels these as pseudo-reference metrics. The final result places the
+prediction RGB, the exact same-patch pseudo-reference RGB and the SAM heatmap together. Prediction
+and reference use the same RGB bands and shared percentile stretch, so their colors are directly
+comparable.
+
+The UI retains the latest input-check, preflight, crop and fusion result for the current browser
+session. These stage records are shown newest first, so running fusion does not hide the crop
+preview. A successful crop manifest is reused only while its TIFF paths, experiment type, crop
+window and run directory still match; fusion therefore does not execute the crop again.
 Install the optional UI dependency once:
 
 ```powershell

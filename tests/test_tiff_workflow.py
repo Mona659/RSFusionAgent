@@ -99,6 +99,7 @@ def test_tiff_workflow_writes_georeferenced_prediction_without_metrics(tmp_path:
     )
 
     assert result.metrics_status == "unavailable_without_target_hs_reference"
+    assert result.reference_rgb_preview_path is None
     assert all(step.status == "completed" for step in result.trace)
     with rasterio.open(result.predicted_hs_path) as dataset:
         assert (dataset.count, dataset.height, dataset.width) == (151, 6, 6)
@@ -184,5 +185,7 @@ def test_tiff_workflow_calculates_legacy_pseudo_reference_metrics(tmp_path: Path
     assert result.metrics is not None
     assert result.metrics_path is not None
     assert result.sam_heatmap_path is not None
+    assert result.reference_rgb_preview_path is not None
     assert Path(result.metrics_path).is_file()
     assert Path(result.sam_heatmap_path).is_file()
+    assert Path(result.reference_rgb_preview_path).is_file()

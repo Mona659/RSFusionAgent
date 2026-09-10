@@ -12,7 +12,8 @@ for the legacy training pipeline.
    and RGB preview. Full-reference metrics are unavailable because target HS is absent.
    In **legacy Database.py simulation** mode, an optional `T2 HS` reference is additionally
    cropped on the HS grid, bilinearly upsampled 3× and used to calculate pseudo-reference
-   metrics and a SAM map. It is not claimed to be native high-resolution ground truth.
+   metrics and a SAM map. It is also rendered beside the predicted RGB with shared display
+   stretch bounds. It is not claimed to be native high-resolution ground truth.
 2. **HDF5 evaluation route (regression)** — one legacy `DownT1YRE.h5` + `DownT2YRE.h5`
    patch with target HS ground truth. It produces PSNR, RMSE, SAM, ERGAS, SSIM, CC, RGB and SAM map.
 
@@ -22,6 +23,8 @@ for the legacy training pipeline.
 - Raw TIFF manifest patch 0: YRE legacy crop profile, prediction shape `[151, 180, 180]`,
   CUDA execution with epoch-200 checkpoint, and a georeferenced output TIFF.
 - Static quality gate: Ruff and pytest, enforced by GitHub Actions on every push.
+- Streamlit retains the latest input-check, preflight, crop and fusion stage result in
+  newest-first order and reuses a matching crop manifest without repeating preprocessing.
 
 ## Safety boundary
 

@@ -1,3 +1,5 @@
+from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -6,14 +8,17 @@ from rasterio.transform import from_origin
 
 from rsfusion_agent.ui.streamlit_app import (
     UiRunConfig,
+    UiStageRecord,
     _load_crop_preview_cards,
     build_agent_command,
     build_crop_command,
+    crop_reuse_key,
     format_history_label,
     inspect_raw_tiff_inputs,
     list_run_history,
     load_json_object,
     resolve_result_artifact,
+    sorted_stage_records,
 )
 
 
@@ -92,6 +97,42 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
     assert crop_command[crop_command.index("--target-hs-reference") + 1] == str(
         tmp_path / "target_hs.tif"
     )
+
+
+def test_crop_reuse_key_changes_when_crop_authorization_changes(tmp_path: Path) -> None:
+    base = UiRunConfig(
+        request="融合",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "python.exe",
+        output_dir=tmp_path / "output",
+        input_mode="tiff",
+        auxiliary_ms_path=tmp_path / "aux_ms.tif",
+        auxiliary_hs_path=tmp_path / "aux_hs.tif",
+        target_ms_path=tmp_path / "target_ms.tif",
+        crop_profile="custom",
+        ms_row_offset=0,
+        ms_col_offset=0,
+        window_height=540,
+        window_width=540,
+    )
+    changed = replace(base, ms_col_offset=360)
+
+    assert crop_reuse_key(base) != crop_reuse_key(changed)
+
+
+def test_stage_records_are_sorted_newest_first_and_keep_each_stage() -> None:
+    now = datetime.now()
+    session_state = {
+        "ui_stage_records": {
+            "preflight": UiStageRecord("preflight", "环境预检", now, {}),
+            "crop": UiStageRecord("crop", "TIFF 裁剪", now + timedelta(seconds=1), {}),
+            "agent": UiStageRecord("agent", "Agent 融合", now + timedelta(seconds=2), {}),
+        }
+    }
+
+    records = sorted_stage_records(session_state)
+
+    assert [record.stage for record in records] == ["agent", "crop", "preflight"]
 
 
 def test_inspect_raw_tiff_inputs_returns_metadata_and_rgb_previews(tmp_path: Path) -> None:

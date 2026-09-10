@@ -10,6 +10,7 @@ import numpy as np
 
 from rsfusion_agent.agent.state import FusionRunRequest, FusionRunResult, ToolTrace
 from rsfusion_agent.tools.artifacts import (
+    hyperspectral_rgb_stretch_bounds,
     save_prediction_tiff,
     save_rgb_preview,
     save_sam_heatmap,
@@ -130,13 +131,29 @@ class YRE151PatchAgent:
             "Saved a normalized 151-band float32 TIFF using the legacy output convention.",
             lambda: save_prediction_tiff(prediction, output_dir / "predicted_hs.tif"),
         )
+        comparison_rgb_bounds = hyperspectral_rgb_stretch_bounds(
+            prediction,
+            prepared.target_hs_gt,
+            bands=request.rgb_bands,
+        )
         rgb_preview_path = self._step(
             "render_hs_rgb",
-            "Rendered a percentile-stretched RGB preview.",
+            "Rendered the prediction with shared prediction/reference RGB stretch bounds.",
             lambda: save_rgb_preview(
                 prediction,
                 output_dir / "rgb_preview.png",
                 bands=request.rgb_bands,
+                stretch_bounds=comparison_rgb_bounds,
+            ),
+        )
+        reference_rgb_preview_path = self._step(
+            "render_reference_hs_rgb",
+            "Rendered the target-HS reference with shared prediction/reference RGB stretch bounds.",
+            lambda: save_rgb_preview(
+                prepared.target_hs_gt,
+                output_dir / "reference_rgb_preview.png",
+                bands=request.rgb_bands,
+                stretch_bounds=comparison_rgb_bounds,
             ),
         )
         sam_heatmap_path = self._step(
@@ -161,6 +178,7 @@ class YRE151PatchAgent:
         artifacts = {
             "predicted_hs": str(predicted_hs_path),
             "rgb_preview": str(rgb_preview_path),
+            "reference_rgb_preview": str(reference_rgb_preview_path),
             "sam_heatmap": str(sam_heatmap_path),
             "metrics": str(metrics_path),
             "model_input": str(input_npz),
@@ -191,6 +209,7 @@ class YRE151PatchAgent:
             metrics=metrics,
             predicted_hs_path=str(predicted_hs_path),
             rgb_preview_path=str(rgb_preview_path),
+            reference_rgb_preview_path=str(reference_rgb_preview_path),
             sam_heatmap_path=str(sam_heatmap_path),
             metrics_path=str(metrics_path),
             manifest_path=str(manifest_path),

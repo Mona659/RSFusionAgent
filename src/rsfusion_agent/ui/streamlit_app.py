@@ -104,6 +104,38 @@ class RawTiffInputCheck:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class UiStageRecord:
+    """Latest persisted result for one stage in the current UI configuration session."""
+
+    stage: str
+    title: str
+    completed_at: datetime
+    payload: Any
+    output_dir: Path | None = None
+
+
+def crop_reuse_key(config: UiRunConfig) -> tuple[Any, ...]:
+    """Identify the exact TIFF inputs and windows authorized by one crop manifest."""
+
+    return (
+        config.input_mode,
+        config.experiment_mode,
+        str(config.auxiliary_ms_path),
+        str(config.auxiliary_hs_path),
+        str(config.target_ms_path),
+        str(config.target_hs_reference_path),
+        config.crop_profile,
+        config.ms_row_offset,
+        config.ms_col_offset,
+        config.window_height,
+        config.window_width,
+        config.hs_row_offset,
+        config.hs_col_offset,
+        str(config.output_dir),
+    )
+
+
 def run_with_elapsed(
     operation: Callable[[], T],
     *,
@@ -781,11 +813,21 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
             f"{estimated_cost.get('currency', '')}（以服务商账单为准）"
         )
 
-    image_columns = st.columns(2)
-    for column, title, artifact_key in (
-        (image_columns[0], "RGB 预览", "rgb_preview"),
-        (image_columns[1], "SAM 热力图", "sam_heatmap"),
+    image_specs = [("融合结果 RGB", "rgb_preview")]
+    if resolve_result_artifact(
+        fusion, output_dir=output_dir, artifact_key="reference_rgb_preview"
     ):
+        reference_title = (
+            "插值伪标签 RGB（同尺度）"
+            if fusion.get("metrics_status")
+            == "available_legacy_interpolated_target_hs_reference"
+            else "标签 RGB（H5 真值，同尺度）"
+        )
+        image_specs.append((reference_title, "reference_rgb_preview"))
+    if resolve_result_artifact(fusion, output_dir=output_dir, artifact_key="sam_heatmap"):
+        image_specs.append(("SAM 热力图", "sam_heatmap"))
+    image_columns = st.columns(len(image_specs))
+    for column, (title, artifact_key) in zip(image_columns, image_specs, strict=True):
         path = resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=artifact_key)
         if path:
             column.image(str(path), caption=title, use_container_width=True)
@@ -799,6 +841,7 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         "run_manifest.json",
         "predicted_hs.tif",
         "rgb_preview.png",
+        "reference_rgb_preview.png",
         "sam_heatmap.png",
     ):
         path = output_dir / name
@@ -819,6 +862,59 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
             )
     with st.expander("查看 agent_result.json"):
         st.json(result)
+
+
+def _store_stage_record(
+    st: Any,
+    *,
+    stage: str,
+    title: str,
+    payload: Any,
+    output_dir: Path | None = None,
+) -> None:
+    """Keep the latest result for each stage in the current configured run."""
+
+    records = dict(st.session_state.get("ui_stage_records", {}))
+    records[stage] = UiStageRecord(
+        stage=stage,
+        title=title,
+        completed_at=datetime.now(),
+        payload=payload,
+        output_dir=output_dir,
+    )
+    st.session_state["ui_stage_records"] = records
+
+
+def sorted_stage_records(session_state: Any) -> list[UiStageRecord]:
+    """Return retained stage results in newest-first completion order."""
+
+    records = list(dict(session_state.get("ui_stage_records", {})).values())
+    return sorted(records, key=lambda item: item.completed_at, reverse=True)
+
+
+def _render_stage_records(st: Any) -> Path | None:
+    """Render current-session stage results newest first and preserve older stages."""
+
+    records = sorted_stage_records(st.session_state)
+    st.subheader("本次配置执行记录")
+    if not records:
+        st.caption("尚未执行输入检查、环境预检、裁剪或融合。")
+        return None
+
+    current_output_dir: Path | None = None
+    for index, record in enumerate(records):
+        label = f"{record.completed_at:%H:%M:%S} · {record.title}"
+        with st.expander(label, expanded=index == 0):
+            if record.stage == "agent":
+                _render_result(st, record.payload, record.output_dir or Path("."))
+                current_output_dir = record.output_dir
+            elif record.stage == "crop":
+                _render_crop_result(st, record.payload)
+            elif record.stage == "input_check":
+                _render_raw_tiff_input_check(st, record.payload)
+            elif record.stage == "preflight":
+                _render_preflight(st, record.payload)
+    return current_output_dir
 
 
 def _render_history_selector(
@@ -851,7 +947,13 @@ def _render_history_selector(
                 result=result,
             )
             st.session_state["ui_output_dir"] = selected.output_dir
-            st.session_state["ui_current_stage"] = "agent"
+            _store_stage_record(
+                st,
+                stage="agent",
+                title="加载历史融合结果",
+                payload=st.session_state["ui_execution"],
+                output_dir=selected.output_dir,
+            )
 
 
 def _task_wait_reporter(st: Any, task_name: str, timeout_seconds: int) -> tuple[Any, WaitReporter]:
@@ -872,13 +974,6 @@ def _task_wait_reporter(st: Any, task_name: str, timeout_seconds: int) -> tuple[
     return progress, report
 
 
-def _clear_current_result(st: Any) -> None:
-    """Ensure a newly started action is shown before stale fusion output."""
-
-    st.session_state.pop("ui_execution", None)
-    st.session_state.pop("ui_output_dir", None)
-
-
 def run_app() -> None:
     """Render the Streamlit page without importing Streamlit during unit tests."""
 
@@ -893,23 +988,26 @@ def run_app() -> None:
     config = _build_config(st)
 
     previous_crop = st.session_state.get("ui_crop_execution")
-    if (
+    current_crop_key = crop_reuse_key(config)
+    reusing_crop = (
         config.input_mode == "tiff"
         and isinstance(previous_crop, UiCropExecution)
         and previous_crop.return_code == 0
         and previous_crop.manifest_path.is_file()
-    ):
+        and st.session_state.get("ui_crop_reuse_key") == current_crop_key
+    )
+    if reusing_crop:
         config = replace(config, crop_manifest_path=previous_crop.manifest_path)
 
     st.subheader("功能操作")
+    if reusing_crop:
+        st.caption(f"已复用本次配置的裁剪清单，不会重复裁剪：{previous_crop.manifest_path}")
     if config.input_mode == "tiff":
         check_col, preflight_col, crop_col, run_col = st.columns(4)
         if check_col.button("检查原始 TIFF 输入", use_container_width=True):
-            _clear_current_result(st)
-            st.session_state.pop("ui_crop_execution", None)
             progress, on_wait = _task_wait_reporter(st, "原始 TIFF 输入检查", 60)
             try:
-                st.session_state["raw_tiff_input_check"] = run_with_elapsed(
+                raw_input_check = run_with_elapsed(
                     lambda: inspect_raw_tiff_inputs(config),
                     timeout_seconds=60,
                     on_wait=on_wait,
@@ -917,10 +1015,15 @@ def run_app() -> None:
             except (FileNotFoundError, RuntimeError, ValueError) as exc:
                 st.error(str(exc))
             else:
+                st.session_state["raw_tiff_input_check"] = raw_input_check
                 progress.progress(100, text="原始 TIFF 输入检查完成")
-                st.session_state["ui_current_stage"] = "input_check"
+                _store_stage_record(
+                    st,
+                    stage="input_check",
+                    title="原始 TIFF 输入检查",
+                    payload=raw_input_check,
+                )
         if crop_col.button("执行裁剪", use_container_width=True):
-            _clear_current_result(st)
             progress, on_wait = _task_wait_reporter(st, "裁剪", config.timeout_seconds)
             try:
                 crop_execution = run_with_elapsed(
@@ -933,24 +1036,21 @@ def run_app() -> None:
             else:
                 st.session_state["ui_crop_execution"] = crop_execution
                 if crop_execution.return_code == 0:
+                    st.session_state["ui_crop_reuse_key"] = current_crop_key
                     progress.progress(100, text="裁剪完成，可执行 Agent 融合")
-                    st.session_state["ui_current_stage"] = "crop"
-        current_paths = (
-            config.auxiliary_ms_path.resolve() if config.auxiliary_ms_path else None,
-            config.auxiliary_hs_path.resolve() if config.auxiliary_hs_path else None,
-            config.target_ms_path.resolve() if config.target_ms_path else None,
-        )
-        if config.target_hs_reference_path is not None:
-            current_paths = (*current_paths, config.target_hs_reference_path.resolve())
-        raw_input_check = st.session_state.get("raw_tiff_input_check")
+                else:
+                    st.session_state.pop("ui_crop_reuse_key", None)
+                _store_stage_record(
+                    st,
+                    stage="crop",
+                    title="TIFF 裁剪",
+                    payload=crop_execution,
+                )
     else:
         preflight_col, run_col = st.columns(2)
-        raw_input_check = None
-        current_paths = ()
     if preflight_col.button("预检模型环境", use_container_width=True):
         from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 
-        _clear_current_result(st)
         progress, on_wait = _task_wait_reporter(st, "模型环境预检", config.preflight_timeout_seconds)
         try:
             result = run_with_elapsed(
@@ -966,15 +1066,20 @@ def run_app() -> None:
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             st.error(str(exc))
         else:
-            st.session_state["ui_preflight"] = result.model_dump(mode="json")
+            preflight_payload = result.model_dump(mode="json")
+            st.session_state["ui_preflight"] = preflight_payload
             progress.progress(100, text="模型环境预检完成")
-            st.session_state["ui_current_stage"] = "preflight"
+            _store_stage_record(
+                st,
+                stage="preflight",
+                title="模型环境预检",
+                payload=preflight_payload,
+            )
 
     if run_col.button("执行 Agent 融合", type="primary", use_container_width=True):
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
-            _clear_current_result(st)
             active_config = config
             if active_config.input_mode == "tiff" and active_config.crop_manifest_path is None:
                 crop_progress, crop_on_wait = _task_wait_reporter(
@@ -992,10 +1097,17 @@ def run_app() -> None:
                 if crop_execution is not None:
                     st.session_state["ui_crop_execution"] = crop_execution
                     if crop_execution.return_code == 0:
+                        st.session_state["ui_crop_reuse_key"] = current_crop_key
                         active_config = replace(
                             active_config, crop_manifest_path=crop_execution.manifest_path
                         )
                         crop_progress.progress(100, text="Agent 前置自动裁剪完成")
+                        _store_stage_record(
+                            st,
+                            stage="crop",
+                            title="TIFF 裁剪（Agent 自动执行）",
+                            payload=crop_execution,
+                        )
                     else:
                         st.error("自动裁剪失败，未执行 Agent 融合。")
             if active_config.input_mode != "tiff" or active_config.crop_manifest_path is not None:
@@ -1015,24 +1127,21 @@ def run_app() -> None:
                     st.session_state["ui_execution"] = execution
                     st.session_state["ui_output_dir"] = active_config.output_dir
                     progress.progress(100, text="Agent 融合完成")
-                    st.session_state["ui_current_stage"] = "agent"
+                    _store_stage_record(
+                        st,
+                        stage="agent",
+                        title="Agent 融合",
+                        payload=execution,
+                        output_dir=active_config.output_dir,
+                    )
 
-    execution = st.session_state.get("ui_execution")
-    output_dir = st.session_state.get("ui_output_dir")
-    current_stage = st.session_state.get("ui_current_stage")
     with st.container(border=True):
-        st.subheader("当前结果")
-        if current_stage == "agent" and execution and output_dir:
-            _render_result(st, execution, output_dir)
-        elif current_stage == "preflight":
-            _render_preflight(st, st.session_state.get("ui_preflight"))
-        elif current_stage == "crop" and config.input_mode == "tiff":
-            _render_crop_result(st, st.session_state.get("ui_crop_execution"))
-        elif current_stage == "input_check" and raw_input_check and raw_input_check.source_paths == current_paths:
-            _render_raw_tiff_input_check(st, raw_input_check)
-        else:
-            _render_preflight(st, st.session_state.get("ui_preflight"))
-        _render_history_selector(st, config.output_dir.parent, current_output_dir=output_dir)
+        current_output_dir = _render_stage_records(st)
+        _render_history_selector(
+            st,
+            config.output_dir.parent,
+            current_output_dir=current_output_dir,
+        )
 
 
 def main() -> None:

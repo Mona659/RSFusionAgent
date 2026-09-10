@@ -215,6 +215,7 @@ class AgentToolbox:
             "artifacts": {
                 "predicted_hs": Path(result.predicted_hs_path).name,
                 "rgb_preview": Path(result.rgb_preview_path).name,
+                "reference_rgb_preview": Path(result.reference_rgb_preview_path).name,
                 "sam_heatmap": Path(result.sam_heatmap_path).name,
                 "metrics": Path(result.metrics_path).name,
                 "manifest": Path(result.manifest_path).name,
@@ -386,6 +387,11 @@ class TiffAgentToolbox:
             "artifacts": {
                 "predicted_hs": Path(result.predicted_hs_path).name,
                 "rgb_preview": Path(result.rgb_preview_path).name,
+                "reference_rgb_preview": (
+                    Path(result.reference_rgb_preview_path).name
+                    if result.reference_rgb_preview_path
+                    else None
+                ),
                 "sam_heatmap": (
                     Path(result.sam_heatmap_path).name if result.sam_heatmap_path else None
                 ),

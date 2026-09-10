@@ -58,7 +58,9 @@ def test_agent_workflow_writes_traceable_artifacts(tmp_path: Path) -> None:
     assert all(step.status == "completed" for step in result.trace)
     assert Path(result.manifest_path).is_file()
     assert Path(result.report_path).is_file()
+    assert Path(result.rgb_preview_path).is_file()
+    assert Path(result.reference_rgb_preview_path).is_file()
+    assert Path(result.sam_heatmap_path).is_file()
     with rasterio.open(result.predicted_hs_path) as dataset:
         assert (dataset.count, dataset.height, dataset.width) == (151, 12, 12)
         assert dataset.dtypes == ("float32",) * 151
-

@@ -13,6 +13,7 @@ from rasterio import Affine
 
 from rsfusion_agent.agent.state import ToolTrace
 from rsfusion_agent.tools.artifacts import (
+    hyperspectral_rgb_stretch_bounds,
     save_prediction_tiff,
     save_rgb_preview,
     save_sam_heatmap,
@@ -61,6 +62,7 @@ class TiffFusionResult(BaseModel):
     metrics: FusionMetrics | None = None
     predicted_hs_path: str
     rgb_preview_path: str
+    reference_rgb_preview_path: str | None = None
     sam_heatmap_path: str | None = None
     metrics_path: str | None = None
     manifest_path: str
@@ -187,27 +189,42 @@ class YRE151TiffPatchAgent:
                 crs=prepared.spatial_metadata.crs,
             ),
         )
-        rgb_preview_path = self._step(
-            "render_hs_rgb",
-            "Rendered a percentile-stretched RGB preview.",
-            lambda: save_rgb_preview(
-                prediction,
-                output_dir / "rgb_preview.png",
-                bands=request.rgb_bands,
-            ),
-        )
-
         warnings = list(prepared.inspection.warnings)
         metrics: FusionMetrics | None = None
+        reference_rgb_preview_path: Path | None = None
         sam_heatmap_path: Path | None = None
         metrics_path: Path | None = None
         if prepared.target_hs_reference_interpolated is None:
+            rgb_preview_path = self._step(
+                "render_hs_rgb",
+                "Rendered a percentile-stretched RGB preview.",
+                lambda: save_rgb_preview(
+                    prediction,
+                    output_dir / "rgb_preview.png",
+                    bands=request.rgb_bands,
+                ),
+            )
             metrics_status = "unavailable_without_target_hs_reference"
             warnings.append(
                 "No target-time HS reference was supplied, so PSNR, RMSE, SAM, ERGAS, SSIM, "
                 "CC and the SAM heatmap are unavailable for raw-TIFF inference."
             )
         else:
+            comparison_rgb_bounds = hyperspectral_rgb_stretch_bounds(
+                prediction,
+                prepared.target_hs_reference_interpolated,
+                bands=request.rgb_bands,
+            )
+            rgb_preview_path = self._step(
+                "render_hs_rgb",
+                "Rendered the prediction with shared prediction/reference RGB stretch bounds.",
+                lambda: save_rgb_preview(
+                    prediction,
+                    output_dir / "rgb_preview.png",
+                    bands=request.rgb_bands,
+                    stretch_bounds=comparison_rgb_bounds,
+                ),
+            )
             metrics_status = "available_legacy_interpolated_target_hs_reference"
             warnings.append(
                 "Metrics use a target-HS reference cropped at native HS resolution and bilinearly "
@@ -218,6 +235,16 @@ class YRE151TiffPatchAgent:
                 "calculate_legacy_reference_metrics",
                 "Calculated six full-reference metrics against the interpolated target-HS reference.",
                 lambda: calculate_metrics(prepared.target_hs_reference_interpolated, prediction),
+            )
+            reference_rgb_preview_path = self._step(
+                "render_reference_hs_rgb",
+                "Rendered the interpolated target-HS pseudo-reference for direct comparison.",
+                lambda: save_rgb_preview(
+                    prepared.target_hs_reference_interpolated,
+                    output_dir / "reference_rgb_preview.png",
+                    bands=request.rgb_bands,
+                    stretch_bounds=comparison_rgb_bounds,
+                ),
             )
             sam_heatmap_path = self._step(
                 "render_reference_sam_heatmap",
@@ -240,6 +267,8 @@ class YRE151TiffPatchAgent:
         }
         if sam_heatmap_path is not None:
             artifacts["sam_heatmap"] = str(sam_heatmap_path)
+        if reference_rgb_preview_path is not None:
+            artifacts["reference_rgb_preview"] = str(reference_rgb_preview_path)
         if metrics_path is not None:
             artifacts["metrics"] = str(metrics_path)
         manifest_data: dict[str, Any] = {
@@ -271,6 +300,9 @@ class YRE151TiffPatchAgent:
             metrics=metrics,
             predicted_hs_path=str(predicted_hs_path),
             rgb_preview_path=str(rgb_preview_path),
+            reference_rgb_preview_path=(
+                str(reference_rgb_preview_path) if reference_rgb_preview_path is not None else None
+            ),
             sam_heatmap_path=str(sam_heatmap_path) if sam_heatmap_path is not None else None,
             metrics_path=str(metrics_path) if metrics_path is not None else None,
             manifest_path=str(manifest_path),
