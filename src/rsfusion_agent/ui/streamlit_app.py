@@ -105,6 +105,32 @@ class RawTiffInputCheck:
 
 
 @dataclass(frozen=True)
+class H5InputCheck:
+    """Metadata and previews for one selected legacy H5 test patch."""
+
+    source_paths: tuple[Path, Path]
+    inspection: dict[str, Any]
+    patch_index: int
+    patch_count: int
+    patch_height: int
+    patch_width: int
+    auxiliary_ms_rgb: Any
+    auxiliary_hs_rgb: Any
+    target_ms_rgb: Any
+    target_hs_gt_rgb: Any
+
+
+@dataclass(frozen=True)
+class TiffCropSourceBounds:
+    """Shared source-grid limits derived from a successful TIFF input check."""
+
+    ms_height: int
+    ms_width: int
+    hs_height: int
+    hs_width: int
+
+
+@dataclass(frozen=True)
 class UiStageRecord:
     """Latest persisted result for one stage in the current UI configuration session."""
 
@@ -134,6 +160,55 @@ def crop_reuse_key(config: UiRunConfig) -> tuple[Any, ...]:
         config.hs_col_offset,
         str(config.output_dir),
     )
+
+
+def raw_tiff_check_key(config: UiRunConfig) -> tuple[str, ...]:
+    """Identify raw TIFF inputs whose inspected dimensions may be reused safely."""
+
+    if config.input_mode != "tiff":
+        return ("h5",)
+    paths = (
+        config.auxiliary_ms_path,
+        config.auxiliary_hs_path,
+        config.target_ms_path,
+        config.target_hs_reference_path,
+    )
+    return (config.experiment_mode, *(str(path) if path is not None else "" for path in paths))
+
+
+def h5_input_check_key(config: UiRunConfig) -> tuple[str, str]:
+    """Identify H5 files whose cached patch count remains valid for selection."""
+
+    return (
+        str(config.auxiliary_h5_path) if config.auxiliary_h5_path is not None else "",
+        str(config.target_h5_path) if config.target_h5_path is not None else "",
+    )
+
+
+def crop_source_bounds(raw_input_check: RawTiffInputCheck) -> TiffCropSourceBounds:
+    """Return the largest source-grid extent simultaneously valid for every input role.
+
+    Crop windows are shared by T1/T2 MS rasters and by T1/T2 HS rasters.  Taking the
+    minimum dimension prevents the UI from offering a window that later fails for one
+    of the required files.
+    """
+
+    ms_rasters = (raw_input_check.auxiliary_ms, raw_input_check.target_ms)
+    hs_rasters = [raw_input_check.auxiliary_hs]
+    if raw_input_check.target_hs_reference is not None:
+        hs_rasters.append(raw_input_check.target_hs_reference)
+    return TiffCropSourceBounds(
+        ms_height=min(int(item["height"]) for item in ms_rasters),
+        ms_width=min(int(item["width"]) for item in ms_rasters),
+        hs_height=min(int(item["height"]) for item in hs_rasters),
+        hs_width=min(int(item["width"]) for item in hs_rasters),
+    )
+
+
+def _largest_multiple_not_above(value: int, divisor: int) -> int:
+    """Return the largest positive multiple of ``divisor`` within ``value``."""
+
+    return max(0, value - (value % divisor))
 
 
 def run_with_elapsed(
@@ -361,6 +436,38 @@ def inspect_raw_tiff_inputs(
     )
 
 
+def inspect_h5_inputs(config: UiRunConfig) -> H5InputCheck:
+    """Inspect one selected H5 patch and build previews of the actual model tensors."""
+
+    if config.input_mode != "h5":
+        raise ValueError("H5 input checks are only available in H5 mode")
+    if config.auxiliary_h5_path is None or config.target_h5_path is None:
+        raise ValueError("H5 mode requires auxiliary and target H5 paths")
+
+    from rsfusion_agent.tools.artifacts import hyperspectral_rgb
+    from rsfusion_agent.tools.h5_patch import prepare_yre151_patch
+
+    prepared = prepare_yre151_patch(
+        config.auxiliary_h5_path,
+        config.target_h5_path,
+        split="test",
+        patch_index=config.patch_index,
+    )
+    inspection = prepared.inspection
+    return H5InputCheck(
+        source_paths=(Path(inspection.auxiliary.path), Path(inspection.target.path)),
+        inspection=inspection.model_dump(mode="json"),
+        patch_index=config.patch_index,
+        patch_count=inspection.auxiliary.patch_count,
+        patch_height=inspection.auxiliary.patch_height,
+        patch_width=inspection.auxiliary.patch_width,
+        auxiliary_ms_rgb=hyperspectral_rgb(prepared.auxiliary_ms, bands=(2, 1, 0)),
+        auxiliary_hs_rgb=hyperspectral_rgb(prepared.auxiliary_hs_interpolated),
+        target_ms_rgb=hyperspectral_rgb(prepared.target_ms, bands=(2, 1, 0)),
+        target_hs_gt_rgb=hyperspectral_rgb(prepared.target_hs_gt),
+    )
+
+
 def load_json_object(path: Path) -> dict[str, Any] | None:
     """Read a result artifact only when it is a valid JSON object."""
 
@@ -510,6 +617,8 @@ def _build_config(st: Any) -> UiRunConfig:
         experiment_mode = "real"
         crop_profile = "yre_legacy_test_v1"
         ms_row = ms_col = window_height = window_width = hs_row = hs_col = None
+        raw_bounds: TiffCropSourceBounds | None = None
+        cached_h5_check: H5InputCheck | None = None
         with st.expander("① 输入数据", expanded=True):
             input_mode = st.radio("输入模式", ("原始 TIFF 模式", "H5 演示模式"), horizontal=True)
             is_tiff = input_mode == "原始 TIFF 模式"
@@ -539,6 +648,19 @@ def _build_config(st: Any) -> UiRunConfig:
                     "模拟：T2 HS 原始裁剪作为低分辨率真值；真实：若提供则 3×插值后仅作伪标签。"
                 )
         if is_tiff:
+            cached_raw_check = st.session_state.get("raw_tiff_input_check")
+            current_raw_check_key = (
+                experiment_mode,
+                auxiliary_ms,
+                auxiliary_hs,
+                target_ms,
+                target_hs_reference,
+            )
+            if (
+                isinstance(cached_raw_check, RawTiffInputCheck)
+                and st.session_state.get("raw_tiff_input_check_key") == current_raw_check_key
+            ):
+                raw_bounds = crop_source_bounds(cached_raw_check)
             with st.expander("② 裁剪参数", expanded=True):
                 crop_profile = st.selectbox(
                     "裁剪窗口方案",
@@ -551,16 +673,128 @@ def _build_config(st: Any) -> UiRunConfig:
                     st.caption("MS：起始行 0、起始列 0、大小 540 × 540")
                     st.caption("HS（T1 与 T2）：起始行 0、起始列 0、大小 180 × 180")
                 else:
-                    st.caption("MS 与 HS 分别使用各自原始像素网格；HS 默认对应 MS 的 1/3。")
+                    st.markdown("**原始 TIFF 裁剪范围（降采样前）**")
+                    if raw_bounds is None:
+                        st.info("请先点击“检查原始 TIFF 输入”。检查完成后，这里的上限会按实际影像尺寸自动锁定。")
+                    else:
+                        st.success(
+                            "已按输入检查结果限制可裁剪范围："
+                            f"MS 最大 {raw_bounds.ms_width} × {raw_bounds.ms_height}，"
+                            f"HS 最大 {raw_bounds.hs_width} × {raw_bounds.hs_height}。"
+                        )
+                    st.caption(
+                        "这里填写源 TIFF 像素。模拟实验会先对该范围模糊/下采样，"
+                        "真实实验则在该范围内把 HS 插值到 MS 网格。"
+                    )
+                    ms_row_limit = (
+                        _largest_multiple_not_above(max(0, raw_bounds.ms_height - 3), 3)
+                        if raw_bounds is not None
+                        else None
+                    )
+                    ms_col_limit = (
+                        _largest_multiple_not_above(max(0, raw_bounds.ms_width - 3), 3)
+                        if raw_bounds is not None
+                        else None
+                    )
                     ms_left, ms_right = st.columns(2)
-                    ms_row = int(ms_left.number_input("MS 起始行", min_value=0, value=0, step=3))
-                    ms_col = int(ms_right.number_input("MS 起始列", min_value=0, value=0, step=3))
-                    window_height = int(ms_left.number_input("MS 裁剪高度", min_value=3, value=540, step=3))
-                    window_width = int(ms_right.number_input("MS 裁剪宽度", min_value=3, value=540, step=3))
-                    hs_left, hs_right = st.columns(2)
-                    hs_row = int(hs_left.number_input("HS 起始行", min_value=0, value=0))
-                    hs_col = int(hs_right.number_input("HS 起始列", min_value=0, value=0))
-                    st.caption("HS 裁剪大小自动为 MS 高度/宽度的 1/3。")
+                    ms_row = int(
+                        ms_left.number_input(
+                            "MS 起始行",
+                            min_value=0,
+                            max_value=ms_row_limit,
+                            value=0,
+                            step=3,
+                        )
+                    )
+                    ms_col = int(
+                        ms_right.number_input(
+                            "MS 起始列",
+                            min_value=0,
+                            max_value=ms_col_limit,
+                            value=0,
+                            step=3,
+                        )
+                    )
+                    auto_hs_offsets = st.checkbox(
+                        "自动按 1/3 映射 HS 起始位置",
+                        value=True,
+                        help="取消后可手动指定 HS 起点；仍需自行保证与 MS 对应。",
+                    )
+                    if auto_hs_offsets:
+                        hs_row, hs_col = ms_row // 3, ms_col // 3
+                        st.caption(f"当前 HS 起始位置：行 {hs_row}、列 {hs_col}（由 MS 起点自动换算）")
+                    else:
+                        hs_left, hs_right = st.columns(2)
+                        hs_row = int(
+                            hs_left.number_input(
+                                "HS 起始行",
+                                min_value=0,
+                                max_value=max(0, raw_bounds.hs_height - 1)
+                                if raw_bounds is not None
+                                else None,
+                                value=0,
+                            )
+                        )
+                        hs_col = int(
+                            hs_right.number_input(
+                                "HS 起始列",
+                                min_value=0,
+                                max_value=max(0, raw_bounds.hs_width - 1)
+                                if raw_bounds is not None
+                                else None,
+                                value=0,
+                            )
+                        )
+
+                    max_height = None
+                    max_width = None
+                    if raw_bounds is not None:
+                        max_height = min(
+                            raw_bounds.ms_height - ms_row,
+                            (raw_bounds.hs_height - hs_row) * 3,
+                        )
+                        max_width = min(
+                            raw_bounds.ms_width - ms_col,
+                            (raw_bounds.hs_width - hs_col) * 3,
+                        )
+                        max_height = _largest_multiple_not_above(max(0, max_height), 3)
+                        max_width = _largest_multiple_not_above(max(0, max_width), 3)
+                    if max_height is not None and (max_height < 3 or max_width is None or max_width < 3):
+                        st.error("当前起始位置无法容纳最小的 3 × 3 MS 源窗口，请调整起始位置。")
+                    safe_max_height = max(3, max_height) if max_height is not None else None
+                    safe_max_width = max(3, max_width) if max_width is not None else None
+                    default_height = min(540, safe_max_height) if safe_max_height is not None else 540
+                    default_width = min(540, safe_max_width) if safe_max_width is not None else 540
+                    window_height = int(
+                        ms_left.number_input(
+                            "MS 源裁剪高度（降采样前）",
+                            min_value=3,
+                            max_value=safe_max_height,
+                            value=default_height,
+                            step=3,
+                        )
+                    )
+                    window_width = int(
+                        ms_right.number_input(
+                            "MS 源裁剪宽度（降采样前）",
+                            min_value=3,
+                            max_value=safe_max_width,
+                            value=default_width,
+                            step=3,
+                        )
+                    )
+                    st.caption(
+                        f"对应 HS 源裁剪尺寸：{window_width // 3} × {window_height // 3}；"
+                        "HS 裁剪尺寸由 MS 自动换算。"
+                    )
+        else:
+            cached = st.session_state.get("h5_input_check")
+            if (
+                isinstance(cached, H5InputCheck)
+                and st.session_state.get("h5_input_check_key")
+                == (auxiliary, target)
+            ):
+                cached_h5_check = cached
         with st.expander("③ 模型与执行", expanded=True):
             checkpoint = st.text_input("Checkpoint", value=_env_default("RSFUSION_CHECKPOINT"))
             model_python = st.text_input(
@@ -584,7 +818,33 @@ def _build_config(st: Any) -> UiRunConfig:
                     ms_width=crop_width,
                     experiment_mode=experiment_mode,
                 )
-                patch_size = default_patch_size(experiment_mode)
+                maximum_patch_size = _largest_multiple_not_above(
+                    min(output_height, output_width), 3
+                )
+                default_size = min(default_patch_size(experiment_mode), maximum_patch_size)
+                if maximum_patch_size < 3:
+                    st.error("当前原始裁剪范围在预处理后不足以生成最小 3 × 3 模型 Patch。")
+                    patch_size = 3
+                else:
+                    patch_widget_key = f"ui_tiff_patch_size_{experiment_mode}"
+                    stored_patch_size = int(st.session_state.get(patch_widget_key, default_size))
+                    if stored_patch_size < 3 or stored_patch_size > maximum_patch_size:
+                        st.session_state[patch_widget_key] = default_size
+                    st.markdown("**模型 Patch 参数（预处理后的模型网格）**")
+                    patch_size = int(
+                        st.number_input(
+                            "模型 Patch 边长",
+                            min_value=3,
+                            max_value=maximum_patch_size,
+                            value=default_size,
+                            step=3,
+                            key=patch_widget_key,
+                            help=(
+                                "模拟实验：该尺寸位于 MS 降采样后的网格；"
+                                "真实实验：该尺寸位于 HS 已插值到 MS 的网格。"
+                            ),
+                        )
+                    )
                 grid_rows, grid_columns = output_height // patch_size, output_width // patch_size
                 total_patches = grid_rows * grid_columns
                 if total_patches < 1:
@@ -594,6 +854,10 @@ def _build_config(st: Any) -> UiRunConfig:
                     )
                     patch_index = 0
                 else:
+                    patch_index_key = f"ui_tiff_patch_index_{experiment_mode}"
+                    stored_patch_index = int(st.session_state.get(patch_index_key, 0))
+                    if stored_patch_index < 0 or stored_patch_index >= total_patches:
+                        st.session_state[patch_index_key] = 0
                     patch_index = int(
                         st.number_input(
                             "TIFF 测试 Patch 编号",
@@ -601,19 +865,47 @@ def _build_config(st: Any) -> UiRunConfig:
                             max_value=total_patches - 1,
                             value=0,
                             step=1,
+                            key=patch_index_key,
                         )
                     )
                     row_offset = (patch_index // grid_columns) * patch_size
                     col_offset = (patch_index % grid_columns) * patch_size
                     st.caption(
                         f"共 {total_patches} 块（{grid_rows} × {grid_columns}）；当前块位于 "
-                        f"输出网格 row={row_offset}, col={col_offset}。"
+                        f"输出网格 row={row_offset}, col={col_offset}。当前 V1 按无重叠网格切块。"
                     )
                 row_offset = (patch_index // grid_columns) * patch_size if total_patches else 0
                 col_offset = (patch_index % grid_columns) * patch_size if total_patches else 0
             else:
-                patch_index = int(st.number_input("H5 测试 Patch 编号", min_value=0, value=0, step=1))
-                patch_size, row_offset, col_offset = 180, 0, 0
+                if cached_h5_check is None:
+                    st.info("请先点击“检查 H5 输入”，系统会读取 test 集 Patch 总数并限制编号范围。")
+                    patch_index = int(
+                        st.number_input("H5 测试 Patch 编号", min_value=0, value=0, step=1)
+                    )
+                    patch_size = 180
+                else:
+                    h5_patch_key = "ui_h5_patch_index"
+                    stored_h5_patch = int(st.session_state.get(h5_patch_key, 0))
+                    if stored_h5_patch < 0 or stored_h5_patch >= cached_h5_check.patch_count:
+                        st.session_state[h5_patch_key] = 0
+                    st.markdown("**H5 测试 Patch 参数**")
+                    patch_index = int(
+                        st.number_input(
+                            "H5 测试 Patch 编号",
+                            min_value=0,
+                            max_value=cached_h5_check.patch_count - 1,
+                            value=0,
+                            step=1,
+                            key=h5_patch_key,
+                        )
+                    )
+                    patch_size = cached_h5_check.patch_height
+                    st.caption(
+                        f"test 集共 {cached_h5_check.patch_count} 个 Patch；每个为 "
+                        f"{cached_h5_check.patch_width} × {cached_h5_check.patch_height}。"
+                        "修改编号后点击“检查 H5 输入”可查看该块的模型输入 RGB。"
+                    )
+                row_offset = col_offset = 0
             timeout_seconds = st.number_input("融合超时（秒）", min_value=30, value=600, step=30)
             preflight_timeout = st.number_input("预检超时（秒）", min_value=10, value=60, step=10)
             runtime_retries = st.selectbox("原生崩溃额外重试次数", (0, 1, 2), index=1)
@@ -730,6 +1022,36 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
         column.image(preview, caption=band_label, use_container_width=True)
         with column.expander("查看完整元数据"):
             column.json(metadata)
+
+
+def _render_h5_input_check(st: Any, result: H5InputCheck | None) -> None:
+    """Render a selected H5 patch exactly as it will enter the frozen YRE model."""
+
+    if result is None:
+        return
+    st.subheader("H5 输入检查")
+    inspection = result.inspection
+    warnings = inspection.get("warnings", [])
+    st.success(
+        f"YRE-151 H5 数据通过检查：test 集共 {result.patch_count} 个 Patch，"
+        f"当前为 Patch {result.patch_index}。"
+    )
+    for warning in warnings:
+        st.caption(f"提示：{warning}")
+
+    cards = (
+        ("T1 辅助 MS（模型输入）", result.auxiliary_ms_rgb, "RGB：波段 3 / 2 / 1"),
+        ("T1 辅助 HS（模型输入）", result.auxiliary_hs_rgb, "RGB：波段 29 / 19 / 10"),
+        ("T2 目标 MS（模型输入）", result.target_ms_rgb, "RGB：波段 3 / 2 / 1"),
+        ("T2 目标 HS 真值", result.target_hs_gt_rgb, "RGB：波段 29 / 19 / 10"),
+    )
+    columns = st.columns(len(cards))
+    for column, (title, preview, band_label) in zip(columns, cards, strict=True):
+        column.markdown(f"#### {title}")
+        column.metric("Patch 尺寸", f"{result.patch_width} × {result.patch_height}")
+        column.image(preview, caption=band_label, use_container_width=True)
+    with st.expander("查看 H5 元数据"):
+        st.json(inspection)
 
 
 def _load_crop_preview_cards(crop_result: dict[str, Any]) -> list[tuple[str, dict[str, Any], Any, str]]:
@@ -1099,6 +1421,8 @@ def _render_stage_records(st: Any, config: UiRunConfig) -> Path | None:
                 _render_crop_result(st, record.payload, config)
             elif record.stage == "input_check":
                 _render_raw_tiff_input_check(st, record.payload)
+            elif record.stage == "h5_input_check":
+                _render_h5_input_check(st, record.payload)
             elif record.stage == "preflight":
                 _render_preflight(st, record.payload)
     return current_output_dir
@@ -1203,6 +1527,7 @@ def run_app() -> None:
                 st.error(str(exc))
             else:
                 st.session_state["raw_tiff_input_check"] = raw_input_check
+                st.session_state["raw_tiff_input_check_key"] = raw_tiff_check_key(config)
                 progress.progress(100, text="原始 TIFF 输入检查完成")
                 _store_stage_record(
                     st,
@@ -1234,7 +1559,27 @@ def run_app() -> None:
                     payload=crop_execution,
                 )
     else:
-        preflight_col, run_col = st.columns(2)
+        check_col, preflight_col, run_col = st.columns(3)
+        if check_col.button("检查 H5 输入", use_container_width=True):
+            progress, on_wait = _task_wait_reporter(st, "H5 输入检查", 60)
+            try:
+                h5_input_check = run_with_elapsed(
+                    lambda: inspect_h5_inputs(config),
+                    timeout_seconds=60,
+                    on_wait=on_wait,
+                )
+            except (FileNotFoundError, RuntimeError, ValueError, IndexError) as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["h5_input_check"] = h5_input_check
+                st.session_state["h5_input_check_key"] = h5_input_check_key(config)
+                progress.progress(100, text="H5 输入检查完成")
+                _store_stage_record(
+                    st,
+                    stage="h5_input_check",
+                    title=f"H5 输入检查 · Patch {config.patch_index}",
+                    payload=h5_input_check,
+                )
     if preflight_col.button("预检模型环境", use_container_width=True):
         from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 

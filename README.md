@@ -13,6 +13,44 @@ An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion
 > `T2 HS` as reduced-resolution ground truth; real keeps full-resolution MS and interpolates HS.
 > A real-mode `T2 HS` is only a pseudo-label, never a native high-resolution ground truth.
 
+## V1.0 feature summary
+
+| Capability | Raw TIFF mode (primary) | H5 evaluation mode |
+|---|---|---|
+| Input check | Four-source metadata, band/spatial information and RGB previews | Legacy `test` dataset validation, Patch count and selected-Patch RGB previews |
+| User configuration | Real/simulation mode, source-pixel crop range, automatic 3× HS mapping and model Patch size | Select a pre-generated `test` Patch by index |
+| Preparation | Writes georeferenced cropped TIFFs and a traceable `crop_manifest.json` | Reuses the existing preprocessed H5 contract; no second crop step |
+| Inference | One selected prepared Patch, preserving target-MS crop georeferencing | One selected legacy Patch with target-HS ground truth |
+| Results | 151-band TIFF, RGB, runtime information and metrics only when a reference is valid | 151-band TIFF, RGB, SAM heatmap and PSNR/RMSE/SAM/ERGAS/SSIM/CC |
+
+The Streamlit UI is a local visual control panel for the same CLI workflows. It keeps
+the input check, runtime preflight, crop and fusion records visible in newest-first
+order. The LLM is not given arrays or unrestricted file access: it only chooses from a
+small, schema-validated local tool allowlist bound to the user-selected configuration.
+
+### TIFF workflow
+
+```text
+Check raw TIFFs → set source crop range → create crop manifest → choose model Patch
+→ preflight model environment → Agent tool calling → local CUDA inference → artifacts
+```
+
+After a successful TIFF input check, custom MS/HS crop controls are constrained by the
+smallest compatible input dimensions. The UI distinguishes **source TIFF crop size**
+from **model Patch size**: for simulation, the latter is measured after 3× degradation;
+for real experiments, it is measured on the HS-upsampled MS grid. V1 uses square,
+non-overlapping model Patches.
+
+### H5 workflow
+
+```text
+Check H5 pair → choose test Patch → preview the exact model inputs → preflight
+→ Agent tool calling → local CUDA inference → metrics and artifacts
+```
+
+H5 files already contain pre-generated test Patches. Therefore H5 mode supports Patch
+selection and RGB inspection but intentionally does not expose a second spatial crop.
+
 ## What V1 does
 
 RSFusionAgent V1 executes a reproducible tool workflow instead of asking a language
@@ -105,6 +143,7 @@ known legacy limitations.
 
 - [x] Inspect standalone raster metadata
 - [x] Validate a YRE-151 auxiliary/target HDF5 pair
+- [x] Display H5 test-Patch count, constrain its selectable index, and preview the exact MS/HS model inputs and target-HS truth
 - [x] Load and normalize one reduced-resolution test patch
 - [x] Run the DC-STSF checkpoint in an isolated PyTorch environment
 - [x] Calculate PSNR, RMSE, SAM, ERGAS, SSIM and CC
@@ -113,6 +152,7 @@ known legacy limitations.
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
 - [x] Inspect original MS/HS TIFF size, bands, spatial metadata and bounded RGB previews before cropping
 - [x] Crop a raw TIFF triplet with a traceable YRE-legacy or custom source-pixel window
+- [x] Bound custom TIFF crop controls after input inspection and separate source-crop size from prepared model-Patch size
 - [x] Run one crop-manifest authorized raw-TIFF patch and preserve target-MS georeferencing
 - [x] Reproduce Database.py-style TIFF pseudo-reference metrics with an optional cropped T2 HS
 - [ ] Convert TIFF triplet to the legacy HDF5 profile
@@ -440,13 +480,19 @@ rsfusion agent-tiff `
 ## Run the local visual demo
 
 The local Streamlit interface defaults to the raw TIFF route. It first checks `T1 MS +
-T1 HS + T2 MS` dimensions, bands, spatial metadata and RGB previews; it then uses the legacy
-YRE or a custom source-pixel crop window, creates a local crop manifest, and invokes
-`agent-tiff`. H5 is the second, regression-evaluation mode: it shows reference metrics and a
-SAM heatmap. For **模拟实验（复现 Database.py）**, provide `ZY2.tif.tif`: it remains native
-reduced-resolution ground truth while only inputs are degraded. For **真实实验**, `T2 HS` is
-optional and shown only as a 3× interpolated pseudo-label. The UI reports the total patch count,
-lets you select a patch, and shows that exact model-input patch before fusion outputs and metrics.
+T1 HS + T2 MS` dimensions, bands, spatial metadata and RGB previews. A custom source-pixel
+window is bounded after that check; it then creates a local crop manifest and invokes
+`agent-tiff`. The source TIFF crop and prepared model Patch are separate controls. For
+**模拟实验（复现 Database.py）**, the `T2 HS` native crop is the reduced-resolution ground truth
+while only model inputs are degraded. For **真实实验**, `T2 HS` is optional and, if supplied,
+is shown only as a 3× interpolated pseudo-label.
+
+H5 is the second, regression-evaluation mode. Clicking **检查 H5 输入** validates the two
+legacy `test` datasets, exposes their total Patch count, limits the selectable Patch index and
+shows RGB previews of the exact T1 MS, T1 HS, T2 MS and T2 HS truth tensors for that Patch.
+H5 input files are already preprocessed Patches, so this route deliberately has no source-TIFF
+crop stage. Both routes show the selected model input before fusion and display local outputs,
+metrics where valid, tool traces and download links after fusion.
 
 The UI retains the latest input-check, preflight, crop and fusion result for the current browser
 session. These stage records are shown newest first, so running fusion does not hide the crop
@@ -476,7 +522,7 @@ key remains in the terminal environment. It invokes the existing `rsfusion agent
 `rsfusion agent-tiff` workflow, so the runtime preflight, tool allowlist, output isolation
 and result JSON records remain active.
 
-V0.4 adds a local run-history selector: reopen an existing `agent_result.json` from
+V1.0 includes a local run-history selector: reopen an existing `agent_result.json` from
 the configured output root without calling the LLM again. The UI and CLI also default
 to one extra retry only for the known Windows native fast-fail exit code `0xC0000409`.
 Every retry is recorded in the runtime result as `attempt_count` and
@@ -500,6 +546,18 @@ python -m ruff check --no-cache src tests examples
 - Load only trusted PyTorch checkpoints. PyTorch checkpoints can contain serialized data.
 - Output and intermediate model artifacts are ignored by Git.
 - LLM tools use an allowlist, strict arguments, a configured patch index and a bounded loop.
+
+## V1.0 limitations and next steps
+
+- The runtime adapter targets the built-in YRE DC-STSF contract only: 4 MS bands, 151 HS bands
+  and 3× scale. Replacing it with another trained model requires a model adapter, input contract
+  and artifact/metric validation rather than only replacing the checkpoint.
+- V1 is an inference and experiment-demonstration system; training and TIFF-to-H5 dataset
+  construction remain in the original research repository.
+- TIFF pixel correspondence is an explicit crop assumption. V1 does not perform automatic
+  registration, reprojection, whole-scene overlap inference or mosaic stitching.
+- Costs come only from optional LLM calls. All image preprocessing, inference, metrics and
+  previews execute locally; a failed runtime preflight stops before an LLM request is created.
 
 ## License and attribution
 

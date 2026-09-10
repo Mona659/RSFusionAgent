@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import h5py
 import numpy as np
 import rasterio
 from rasterio.transform import from_origin
@@ -13,10 +14,14 @@ from rsfusion_agent.ui.streamlit_app import (
     build_agent_command,
     build_crop_command,
     crop_reuse_key,
+    crop_source_bounds,
     format_history_label,
+    h5_input_check_key,
+    inspect_h5_inputs,
     inspect_raw_tiff_inputs,
     list_run_history,
     load_json_object,
+    raw_tiff_check_key,
     resolve_result_artifact,
     sorted_stage_records,
 )
@@ -36,6 +41,12 @@ def _write_raster(path: Path, *, count: int, height: int, width: int, resolution
         crs="EPSG:32650",
     ) as dataset:
         dataset.write(data)
+
+
+def _write_h5(path: Path, *, offset: int = 0) -> None:
+    data = np.arange(2 * 12 * 15 * 306, dtype=np.int32).reshape(2, 12, 15, 306)
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("test", data=((data + offset) % 5000).astype(np.int16))
 
 
 def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Path) -> None:
@@ -185,6 +196,69 @@ def test_inspect_raw_tiff_inputs_returns_metadata_and_rgb_previews(tmp_path: Pat
     assert result.auxiliary_hs["band_count"] == 151
     assert result.auxiliary_ms_rgb.shape == (8, 8, 3)
     assert result.auxiliary_hs_rgb.shape == (4, 4, 3)
+
+
+def test_raw_tiff_check_key_and_crop_bounds_follow_the_smallest_required_input(
+    tmp_path: Path,
+) -> None:
+    auxiliary_ms = tmp_path / "aux_ms.tif"
+    target_ms = tmp_path / "target_ms.tif"
+    auxiliary_hs = tmp_path / "aux_hs.tif"
+    target_hs = tmp_path / "target_hs.tif"
+    _write_raster(auxiliary_ms, count=4, height=15, width=18, resolution=3)
+    _write_raster(target_ms, count=4, height=12, width=15, resolution=3)
+    _write_raster(auxiliary_hs, count=151, height=5, width=6, resolution=9)
+    _write_raster(target_hs, count=151, height=4, width=5, resolution=9)
+    config = UiRunConfig(
+        request="检查输入 TIFF",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-1",
+        input_mode="tiff",
+        auxiliary_ms_path=auxiliary_ms,
+        auxiliary_hs_path=auxiliary_hs,
+        target_ms_path=target_ms,
+        target_hs_reference_path=target_hs,
+        experiment_mode="simulation",
+    )
+
+    bounds = crop_source_bounds(inspect_raw_tiff_inputs(config, preview_max_dimension=8))
+
+    assert raw_tiff_check_key(config) == (
+        "simulation",
+        str(auxiliary_ms),
+        str(auxiliary_hs),
+        str(target_ms),
+        str(target_hs),
+    )
+    assert (bounds.ms_height, bounds.ms_width) == (12, 15)
+    assert (bounds.hs_height, bounds.hs_width) == (4, 5)
+
+
+def test_inspect_h5_inputs_exposes_patch_count_and_model_input_previews(tmp_path: Path) -> None:
+    auxiliary = tmp_path / "auxiliary.h5"
+    target = tmp_path / "target.h5"
+    _write_h5(auxiliary)
+    _write_h5(target, offset=10)
+    config = UiRunConfig(
+        request="检查 H5 输入",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-1",
+        input_mode="h5",
+        auxiliary_h5_path=auxiliary,
+        target_h5_path=target,
+        patch_index=1,
+    )
+
+    result = inspect_h5_inputs(config)
+
+    assert h5_input_check_key(config) == (str(auxiliary), str(target))
+    assert result.patch_index == 1
+    assert result.patch_count == 2
+    assert (result.patch_height, result.patch_width) == (12, 15)
+    assert result.auxiliary_ms_rgb.shape == (12, 15, 3)
+    assert result.target_hs_gt_rgb.shape == (12, 15, 3)
 
 
 def test_crop_preview_cards_render_available_crop_artifacts(tmp_path: Path) -> None:

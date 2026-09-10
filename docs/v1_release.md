@@ -9,13 +9,15 @@ for the legacy training pipeline.
 1. **Raw TIFF route (primary)** — `T1 MS + T1 HS + T2 MS`, first checked for source
    dimensions, bands, spatial metadata and bounded RGB previews, then cropped through an explicit
    `crop_manifest.json`. It produces a target-MS-georeferenced 151-band prediction TIFF
-   and RGB preview. Full-reference metrics are unavailable because target HS is absent.
-   In **legacy Database.py simulation** mode, an optional `T2 HS` reference is additionally
-   cropped on the HS grid, bilinearly upsampled 3× and used to calculate pseudo-reference
-   metrics and a SAM map. It is also rendered beside the predicted RGB with shared display
-   stretch bounds. It is not claimed to be native high-resolution ground truth.
+   and RGB preview. In **real** mode, full-reference metrics are unavailable without `T2 HS`;
+   a supplied `T2 HS` is 3× interpolated and clearly labelled only as a pseudo-reference.
+   In **legacy Database.py simulation** mode, `T2 HS` is required: its native HS crop is kept as
+   reduced-resolution ground truth while the model inputs are blurred and downsampled. This route
+   therefore produces valid reduced-resolution metrics and a SAM map.
 2. **HDF5 evaluation route (regression)** — one legacy `DownT1YRE.h5` + `DownT2YRE.h5`
-   patch with target HS ground truth. It produces PSNR, RMSE, SAM, ERGAS, SSIM, CC, RGB and SAM map.
+   patch with target HS ground truth. The UI checks the `test` dataset, reports the selectable
+   Patch count and previews the selected model inputs before inference. It produces PSNR, RMSE,
+   SAM, ERGAS, SSIM, CC, RGB and SAM map.
 
 ## Verified evidence
 
@@ -25,6 +27,8 @@ for the legacy training pipeline.
 - Static quality gate: Ruff and pytest, enforced by GitHub Actions on every push.
 - Streamlit retains the latest input-check, preflight, crop and fusion stage result in
   newest-first order and reuses a matching crop manifest without repeating preprocessing.
+- After a raw TIFF input check, custom source-crop controls are bounded by compatible input
+  dimensions. Source crop size and prepared model-Patch size are independent controls.
 
 ## Safety boundary
 
