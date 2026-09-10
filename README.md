@@ -4,14 +4,14 @@
 
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
-> **V1.0 scope:** YRE reduced-resolution profile, 151 HS bands and one test patch.
+> **V1.0 scope:** YRE 151-band model with selectable, non-overlapping test patches.
 > The primary route starts with raw TIFF input inspection and RGB previews, then a
 > source-pixel crop authorized by a traceable manifest. Legacy HDF5 remains available
 > as a regression-evaluation route. TIFF-to-HDF5 conversion, automatic registration and
 > whole-scene stitching are reserved for later versions.
-> A second TIFF option reproduces the active `Database.py` test convention with an optional
-> `T2 HS` reference: it reports metrics against a 3× interpolated pseudo-reference, not a
-> native high-resolution ground truth image.
+> TIFF reproduces the two `Database.py` contracts: simulation degrades inputs and keeps native
+> `T2 HS` as reduced-resolution ground truth; real keeps full-resolution MS and interpolates HS.
+> A real-mode `T2 HS` is only a pseudo-label, never a native high-resolution ground truth.
 
 ## What V1 does
 
@@ -297,12 +297,11 @@ The crop manifest records the correspondence assumption. It is not automatic
 registration; it is the explicit source-pixel pairing you approved. Use that manifest
 for raw YRE inference rather than passing the still-offset source TIFFs directly.
 
-## Run one raw-TIFF crop (no reference metrics)
+## Run one raw-TIFF experiment patch
 
-The current raw-TIFF route reproduces the legacy input preparation: it reads an aligned
-MS window, reads the corresponding low-resolution auxiliary HS window, bilinearly
-upsamples it by 3, normalizes by `10000`, and invokes the same DC-STSF runtime. It saves
-a georeferenced `predicted_hs.tif` using the target-MS crop transform and CRS.
+The crop manifest locks the experiment type and source-pixel correspondence. `simulation`
+applies Database.py's Gaussian blur and 3× down-sampling to inputs, retaining native target-HS
+as ground truth. `real` retains a 540×540 MS test patch and interpolates HS to the common grid.
 
 ```powershell
 $checkpoint = "C:\\path\\to\\checkpoints\\model-epochs200.pth"
@@ -310,6 +309,8 @@ $modelPython = "C:\\path\\to\\model-env\\Scripts\\python.exe"
 
 rsfusion infer-tiff `
   --crop-manifest "outputs\\yre_legacy_crop\\crop_manifest.json" `
+  --experiment-mode simulation `
+  --patch-index 0 `
   --checkpoint $checkpoint `
   --model-python $modelPython `
   --patch-size 180 `
@@ -320,10 +321,10 @@ rsfusion infer-tiff `
   --pretty
 ```
 
-`row-offset` and `col-offset` are high-resolution MS pixel offsets relative to the crop
-window and must be divisible by 3. The raw-TIFF route requires only `T1 MS + T1 HS +
-T2 MS`; as it has no T2 HS reference, full-reference metrics and the SAM heatmap are
-intentionally unavailable.
+`patch-index` is the preferred row-major choice in the non-overlapping output grid, so changing
+it does not crop again. For compatibility, `row-offset` and `col-offset` remain supported.
+Simulation requires `T2 HS` and produces valid reduced-resolution metrics. Real mode can run
+without `T2 HS`; a supplied `T2 HS` produces clearly labelled interpolated pseudo-label metrics.
 
 ## Run V1 inference
 
@@ -442,13 +443,10 @@ The local Streamlit interface defaults to the raw TIFF route. It first checks `T
 T1 HS + T2 MS` dimensions, bands, spatial metadata and RGB previews; it then uses the legacy
 YRE or a custom source-pixel crop window, creates a local crop manifest, and invokes
 `agent-tiff`. H5 is the second, regression-evaluation mode: it shows reference metrics and a
-SAM heatmap. TIFF mode correctly labels metrics as unavailable without target HS.
-For **模拟实验（复现 Database.py）**, provide `ZY2.tif.tif` as `T2 HS` reference. It is cropped
-with the HS window and bilinearly upsampled 3× for metrics, exactly as the active legacy test
-construction; the UI labels these as pseudo-reference metrics. The final result places the
-prediction RGB, the exact same-patch pseudo-reference RGB and the SAM heatmap together. Prediction
-and reference use the same RGB bands and shared percentile stretch, so their colors are directly
-comparable.
+SAM heatmap. For **模拟实验（复现 Database.py）**, provide `ZY2.tif.tif`: it remains native
+reduced-resolution ground truth while only inputs are degraded. For **真实实验**, `T2 HS` is
+optional and shown only as a 3× interpolated pseudo-label. The UI reports the total patch count,
+lets you select a patch, and shows that exact model-input patch before fusion outputs and metrics.
 
 The UI retains the latest input-check, preflight, crop and fusion result for the current browser
 session. These stage records are shown newest first, so running fusion does not hide the crop

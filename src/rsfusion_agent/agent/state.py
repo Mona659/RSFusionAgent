@@ -42,6 +42,7 @@ class FusionRunResult(BaseModel):
     reference_rgb_preview_path: str
     sam_heatmap_path: str
     metrics_path: str
+    input_preview_paths: dict[str, str]
     manifest_path: str
     report_path: str
     trace: list[ToolTrace]

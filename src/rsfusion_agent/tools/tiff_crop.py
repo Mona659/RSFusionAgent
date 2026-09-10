@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import rasterio
 from pydantic import BaseModel, Field, ValidationError
@@ -13,6 +14,9 @@ from rsfusion_agent.tools.raster_inspector import RasterInspectionResult, inspec
 
 YRE_LEGACY_TEST_PROFILE = "yre_legacy_test_v1"
 CUSTOM_PROFILE = "custom"
+REAL_EXPERIMENT = "real"
+SIMULATION_EXPERIMENT = "simulation"
+ExperimentMode = Literal["real", "simulation"]
 
 
 class CropWindow(BaseModel):
@@ -28,6 +32,7 @@ class TiffCropResult(BaseModel):
     """Traceable result of writing three native-grid cropped TIFFs."""
 
     profile: str
+    experiment_mode: ExperimentMode = REAL_EXPERIMENT
     auxiliary_ms_source: RasterInspectionResult
     auxiliary_hs_source: RasterInspectionResult
     target_ms_source: RasterInspectionResult
@@ -159,6 +164,7 @@ def crop_tiff_triplet(
     output_dir: str | Path,
     *,
     target_hs_reference_path: str | Path | None = None,
+    experiment_mode: ExperimentMode = REAL_EXPERIMENT,
     profile: str = YRE_LEGACY_TEST_PROFILE,
     ms_row_offset: int | None = None,
     ms_col_offset: int | None = None,
@@ -167,7 +173,7 @@ def crop_tiff_triplet(
     hs_row_offset: int | None = None,
     hs_col_offset: int | None = None,
 ) -> TiffCropResult:
-    """Write three cropped TIFFs using an explicit source-pixel correspondence rule."""
+    """Write native-grid crops shared by the real and simulated experiment pipelines."""
 
     auxiliary_ms = inspect_raster(auxiliary_ms_path)
     auxiliary_hs = inspect_raster(auxiliary_hs_path)
@@ -181,6 +187,8 @@ def crop_tiff_triplet(
         raise ValueError(f"Auxiliary HS input must have {HS_BANDS} bands")
     if target_hs_reference is not None and target_hs_reference.band_count != HS_BANDS:
         raise ValueError(f"Target HS reference must have {HS_BANDS} bands")
+    if experiment_mode == SIMULATION_EXPERIMENT and target_hs_reference is None:
+        raise ValueError("Simulation experiment requires a target-time HS ground-truth TIFF")
     ms_window, hs_window = resolve_crop_windows(
         profile=profile,
         ms_row_offset=ms_row_offset,
@@ -214,13 +222,19 @@ def crop_tiff_triplet(
         "Crops preserve each source TIFF's native georeferencing. The configured pixel windows "
         "are an explicit correspondence assumption, not automatic registration or reprojection."
     ]
-    if target_hs_reference is not None:
+    if experiment_mode == SIMULATION_EXPERIMENT:
         warnings.append(
-            "Target HS reference is retained for legacy Database.py-style interpolated "
-            "pseudo-reference metrics; it is not claimed to be native high-resolution ground truth."
+            "Simulation mode retains the native target-HS crop as reduced-resolution ground truth; "
+            "only the model inputs are blurred and downsampled after cropping."
+        )
+    elif target_hs_reference is not None:
+        warnings.append(
+            "Real mode will upsample the native target-HS crop by three for pseudo-reference "
+            "visualization and metrics; it is not native high-resolution ground truth."
         )
     result = TiffCropResult(
         profile=profile,
+        experiment_mode=experiment_mode,
         auxiliary_ms_source=auxiliary_ms,
         auxiliary_hs_source=auxiliary_hs,
         target_ms_source=target_ms,

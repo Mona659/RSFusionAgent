@@ -91,8 +91,11 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
     assert agent_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-tiff"]
     assert "--crop-manifest" in agent_command
     assert agent_command[agent_command.index("--patch-size") + 1] == "180"
+    assert agent_command[agent_command.index("--patch-index") + 1] == "0"
+    assert agent_command[agent_command.index("--experiment-mode") + 1] == "simulation"
     assert crop_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "crop-tiff-triplet"]
     assert crop_command[crop_command.index("--profile") + 1] == "custom"
+    assert crop_command[crop_command.index("--experiment-mode") + 1] == "simulation"
     assert crop_command[crop_command.index("--hs-col-offset") + 1] == "120"
     assert crop_command[crop_command.index("--target-hs-reference") + 1] == str(
         tmp_path / "target_hs.tif"

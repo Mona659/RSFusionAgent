@@ -17,6 +17,7 @@ from rsfusion_agent.agent.tiff_workflow import (
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
 from rsfusion_agent.tools.error_diagnosis import diagnose_error
 from rsfusion_agent.tools.h5_patch import H5PairInspection, inspect_h5_pair
+from rsfusion_agent.tools.tiff_crop import ExperimentMode
 from rsfusion_agent.tools.tiff_patch import inspect_manifest_crop_triplet
 
 
@@ -218,6 +219,7 @@ class AgentToolbox:
                 "reference_rgb_preview": Path(result.reference_rgb_preview_path).name,
                 "sam_heatmap": Path(result.sam_heatmap_path).name,
                 "metrics": Path(result.metrics_path).name,
+                **{key: Path(path).name for key, path in result.input_preview_paths.items()},
                 "manifest": Path(result.manifest_path).name,
                 "report": Path(result.report_path).name,
             },
@@ -232,7 +234,9 @@ class TiffLLMToolContext(BaseModel):
     checkpoint_path: Path
     model_python: Path
     output_dir: Path
-    patch_size: int = Field(default=180, gt=0)
+    experiment_mode: ExperimentMode | None = None
+    patch_size: int | None = Field(default=None, gt=0)
+    patch_index: int | None = Field(default=None, ge=0)
     row_offset: int = Field(default=0, ge=0)
     col_offset: int = Field(default=0, ge=0)
     device: str = "auto"
@@ -316,11 +320,7 @@ class TiffAgentToolbox:
                         else None
                     ),
                 },
-                "experiment_mode": (
-                    "legacy_database_simulation"
-                    if crop.target_hs_reference_path is not None
-                    else "real_without_target_hs_reference"
-                ),
+                "experiment_mode": crop.experiment_mode,
                 "warnings": inspection.warnings,
             }
         if name == "run_yre151_tiff_fusion":
@@ -334,7 +334,9 @@ class TiffAgentToolbox:
                     checkpoint_path=self.context.checkpoint_path,
                     model_python=self.context.model_python,
                     output_dir=self.context.output_dir,
+                    experiment_mode=self.context.experiment_mode,
                     patch_size=self.context.patch_size,
+                    patch_index=self.context.patch_index,
                     row_offset=self.context.row_offset,
                     col_offset=self.context.col_offset,
                     device=self.context.device,
@@ -378,6 +380,10 @@ class TiffAgentToolbox:
             "ok": True,
             "status": result.status,
             "profile": result.profile,
+            "experiment_mode": result.experiment_mode,
+            "reference_kind": result.reference_kind,
+            "patch_index": result.patch_index,
+            "total_patch_count": result.total_patch_count,
             "alignment_mode": result.spatial_metadata.alignment_mode,
             "device": result.runtime.device,
             "checkpoint_epoch": result.runtime.checkpoint_epoch,
@@ -396,6 +402,7 @@ class TiffAgentToolbox:
                     Path(result.sam_heatmap_path).name if result.sam_heatmap_path else None
                 ),
                 "metrics": Path(result.metrics_path).name if result.metrics_path else None,
+                **{key: Path(path).name for key, path in result.input_preview_paths.items()},
                 "manifest": Path(result.manifest_path).name,
                 "report": Path(result.report_path).name,
             },

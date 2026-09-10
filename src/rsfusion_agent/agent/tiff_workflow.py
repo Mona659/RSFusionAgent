@@ -21,11 +21,12 @@ from rsfusion_agent.tools.artifacts import (
 )
 from rsfusion_agent.tools.metrics import FusionMetrics, calculate_metrics, calculate_sam_map
 from rsfusion_agent.tools.model_runtime import ModelRuntimeResult, run_yre151_runtime
-from rsfusion_agent.tools.tiff_patch import (
-    TiffPatchSpatialMetadata,
-    prepare_tiff_patch,
-    prepare_tiff_patch_from_manifest,
+from rsfusion_agent.tools.tiff_crop import SIMULATION_EXPERIMENT, ExperimentMode
+from rsfusion_agent.tools.tiff_experiment import (
+    PreparedExperimentPatch,
+    prepare_experiment_patch_from_manifest,
 )
+from rsfusion_agent.tools.tiff_patch import TiffPatchSpatialMetadata
 from rsfusion_agent.tools.tiff_triplet import TiffTripletInspection
 
 T = TypeVar("T")
@@ -43,7 +44,9 @@ class TiffFusionRequest(BaseModel):
     checkpoint_path: Path
     model_python: Path
     output_dir: Path
-    patch_size: int = Field(default=180, gt=0)
+    experiment_mode: ExperimentMode | None = None
+    patch_size: int | None = Field(default=None, gt=0)
+    patch_index: int | None = Field(default=None, ge=0)
     row_offset: int = Field(default=0, ge=0)
     col_offset: int = Field(default=0, ge=0)
     device: str = "auto"
@@ -58,6 +61,10 @@ class TiffFusionResult(BaseModel):
     inspection: TiffTripletInspection
     spatial_metadata: TiffPatchSpatialMetadata
     runtime: ModelRuntimeResult
+    experiment_mode: ExperimentMode
+    reference_kind: str
+    patch_index: int | None = None
+    total_patch_count: int = Field(gt=0)
     metrics_status: str
     metrics: FusionMetrics | None = None
     predicted_hs_path: str
@@ -65,6 +72,7 @@ class TiffFusionResult(BaseModel):
     reference_rgb_preview_path: str | None = None
     sam_heatmap_path: str | None = None
     metrics_path: str | None = None
+    input_preview_paths: dict[str, str]
     manifest_path: str
     report_path: str
     trace: list[ToolTrace]
@@ -102,6 +110,46 @@ class YRE151TiffPatchAgent:
         )
         return value
 
+    @staticmethod
+    def _save_input_previews(
+        prepared: PreparedExperimentPatch,
+        output_dir: Path,
+    ) -> dict[str, str]:
+        """Persist previews of the exact tensors supplied to the model runner."""
+
+        artifacts = {
+            "input_auxiliary_ms_preview": str(
+                save_rgb_preview(
+                    prepared.auxiliary_ms,
+                    output_dir / "input_auxiliary_ms_preview.png",
+                    bands=(2, 1, 0),
+                )
+            ),
+            "input_auxiliary_hs_preview": str(
+                save_rgb_preview(
+                    prepared.auxiliary_hs_interpolated,
+                    output_dir / "input_auxiliary_hs_preview.png",
+                    bands=(28, 18, 9),
+                )
+            ),
+            "input_target_ms_preview": str(
+                save_rgb_preview(
+                    prepared.target_ms,
+                    output_dir / "input_target_ms_preview.png",
+                    bands=(2, 1, 0),
+                )
+            ),
+        }
+        if prepared.target_hs_reference is not None:
+            artifacts["input_target_hs_reference_preview"] = str(
+                save_rgb_preview(
+                    prepared.target_hs_reference,
+                    output_dir / "input_target_hs_reference_preview.png",
+                    bands=(28, 18, 9),
+                )
+            )
+        return artifacts
+
     def run(self, request: TiffFusionRequest) -> TiffFusionResult:
         self.trace = []
         output_dir = request.output_dir.expanduser().resolve()
@@ -113,35 +161,25 @@ class YRE151TiffPatchAgent:
             prepared = self._step(
                 "prepare_manifest_tiff_patch",
                 "Validated the configured crop manifest and prepared one authorized TIFF patch.",
-                lambda: prepare_tiff_patch_from_manifest(
+                lambda: prepare_experiment_patch_from_manifest(
                     request.crop_manifest_path,
+                    experiment_mode=request.experiment_mode,
                     patch_size=request.patch_size,
+                    patch_index=request.patch_index,
                     row_offset=request.row_offset,
                     col_offset=request.col_offset,
                 ),
             )
         else:
-            if None in (
-                request.auxiliary_ms_path,
-                request.auxiliary_hs_path,
-                request.target_ms_path,
-            ):
-                raise ValueError(
-                    "Raw TIFF inference requires either a crop manifest or all three TIFF paths"
-                )
-            prepared = self._step(
-                "prepare_tiff_patch",
-                "Validated TIFF metadata, read one aligned crop and normalized model inputs.",
-                lambda: prepare_tiff_patch(
-                    request.auxiliary_ms_path,
-                    request.auxiliary_hs_path,
-                    request.target_ms_path,
-                    target_hs_reference_path=request.target_hs_reference_path,
-                    patch_size=request.patch_size,
-                    row_offset=request.row_offset,
-                    col_offset=request.col_offset,
-                ),
+            raise ValueError(
+                "V2 TIFF fusion requires a crop manifest so real/simulation preprocessing and "
+                "patch provenance are explicit. Run crop-tiff-triplet first."
             )
+        input_preview_paths = self._step(
+            "render_input_patch_previews",
+            "Rendered the exact common-grid MS/HS tensors selected for this fusion patch.",
+            lambda: self._save_input_previews(prepared, output_dir),
+        )
         input_npz = self._step(
             "write_model_input",
             "Persisted normalized TIFF-derived inputs for the isolated PyTorch runtime.",
@@ -165,7 +203,7 @@ class YRE151TiffPatchAgent:
         def read_prediction() -> np.ndarray:
             with np.load(runtime.output_npz) as payload:
                 prediction = np.asarray(payload["predicted_hs"], dtype=np.float32)
-            expected_shape = (151, request.patch_size, request.patch_size)
+            expected_shape = (151, prepared.selection.patch_size, prepared.selection.patch_size)
             if prediction.shape != expected_shape:
                 raise ValueError(
                     f"Model prediction shape is {prediction.shape}; expected {expected_shape}"
@@ -194,7 +232,7 @@ class YRE151TiffPatchAgent:
         reference_rgb_preview_path: Path | None = None
         sam_heatmap_path: Path | None = None
         metrics_path: Path | None = None
-        if prepared.target_hs_reference_interpolated is None:
+        if prepared.target_hs_reference is None:
             rgb_preview_path = self._step(
                 "render_hs_rgb",
                 "Rendered a percentile-stretched RGB preview.",
@@ -212,7 +250,7 @@ class YRE151TiffPatchAgent:
         else:
             comparison_rgb_bounds = hyperspectral_rgb_stretch_bounds(
                 prediction,
-                prepared.target_hs_reference_interpolated,
+                prepared.target_hs_reference,
                 bands=request.rgb_bands,
             )
             rgb_preview_path = self._step(
@@ -225,22 +263,26 @@ class YRE151TiffPatchAgent:
                     stretch_bounds=comparison_rgb_bounds,
                 ),
             )
-            metrics_status = "available_legacy_interpolated_target_hs_reference"
+            metrics_status = (
+                "available_reduced_resolution_ground_truth"
+                if prepared.experiment_mode == SIMULATION_EXPERIMENT
+                else "available_interpolated_target_hs_pseudo_reference"
+            )
             warnings.append(
-                "Metrics use a target-HS reference cropped at native HS resolution and bilinearly "
-                "upsampled by three, reproducing the active Database.py test construction. "
-                "It is an interpolated pseudo-reference, not native high-resolution ground truth."
+                "Simulation metrics use the native target-HS reduced-resolution ground truth."
+                if prepared.experiment_mode == SIMULATION_EXPERIMENT
+                else "Real-mode metrics use a 3x interpolated target-HS pseudo-reference, not native high-resolution ground truth."
             )
             metrics = self._step(
-                "calculate_legacy_reference_metrics",
-                "Calculated six full-reference metrics against the interpolated target-HS reference.",
-                lambda: calculate_metrics(prepared.target_hs_reference_interpolated, prediction),
+                "calculate_reference_metrics",
+                "Calculated six metrics against the mode-specific target-HS reference.",
+                lambda: calculate_metrics(prepared.target_hs_reference, prediction),
             )
             reference_rgb_preview_path = self._step(
                 "render_reference_hs_rgb",
-                "Rendered the interpolated target-HS pseudo-reference for direct comparison.",
+                "Rendered the mode-specific target-HS reference for direct comparison.",
                 lambda: save_rgb_preview(
-                    prepared.target_hs_reference_interpolated,
+                    prepared.target_hs_reference,
                     output_dir / "reference_rgb_preview.png",
                     bands=request.rgb_bands,
                     stretch_bounds=comparison_rgb_bounds,
@@ -248,15 +290,15 @@ class YRE151TiffPatchAgent:
             )
             sam_heatmap_path = self._step(
                 "render_reference_sam_heatmap",
-                "Rendered the SAM heatmap against the interpolated target-HS reference.",
+                "Rendered the SAM heatmap against the mode-specific target-HS reference.",
                 lambda: save_sam_heatmap(
-                    calculate_sam_map(prepared.target_hs_reference_interpolated, prediction),
+                    calculate_sam_map(prepared.target_hs_reference, prediction),
                     output_dir / "sam_heatmap.png",
                 ),
             )
             metrics_path = self._step(
                 "save_reference_metrics",
-                "Saved legacy pseudo-reference metrics as JSON.",
+                "Saved mode-specific reference metrics as JSON.",
                 lambda: write_json(metrics.model_dump(mode="json"), output_dir / "metrics.json"),
             )
         artifacts = {
@@ -264,6 +306,7 @@ class YRE151TiffPatchAgent:
             "rgb_preview": str(rgb_preview_path),
             "model_input": str(input_npz),
             "model_output": str(runtime_output),
+            **input_preview_paths,
         }
         if sam_heatmap_path is not None:
             artifacts["sam_heatmap"] = str(sam_heatmap_path)
@@ -273,7 +316,18 @@ class YRE151TiffPatchAgent:
             artifacts["metrics"] = str(metrics_path)
         manifest_data: dict[str, Any] = {
             "status": "completed",
-            "profile": "yre151_tiff_single_patch_v1",
+            "profile": "yre151_tiff_experiment_patch_v2",
+            "experiment_mode": prepared.experiment_mode,
+            "reference_kind": prepared.reference_kind,
+            "patch_selection": {
+                "patch_index": prepared.selection.patch_index,
+                "row_offset": prepared.selection.row_offset,
+                "col_offset": prepared.selection.col_offset,
+                "patch_size": prepared.selection.patch_size,
+                "grid_rows": prepared.selection.grid_rows,
+                "grid_columns": prepared.selection.grid_columns,
+                "total_patch_count": prepared.selection.total_patch_count,
+            },
             "request": request.model_dump(mode="json"),
             "inspection": prepared.inspection.model_dump(mode="json"),
             "spatial_metadata": prepared.spatial_metadata.model_dump(mode="json"),
@@ -292,10 +346,14 @@ class YRE151TiffPatchAgent:
         )
         return TiffFusionResult(
             status="completed",
-            profile="yre151_tiff_single_patch_v1",
+            profile="yre151_tiff_experiment_patch_v2",
             inspection=prepared.inspection,
             spatial_metadata=prepared.spatial_metadata,
             runtime=runtime,
+            experiment_mode=prepared.experiment_mode,
+            reference_kind=prepared.reference_kind,
+            patch_index=prepared.selection.patch_index,
+            total_patch_count=prepared.selection.total_patch_count,
             metrics_status=metrics_status,
             metrics=metrics,
             predicted_hs_path=str(predicted_hs_path),
@@ -305,6 +363,7 @@ class YRE151TiffPatchAgent:
             ),
             sam_heatmap_path=str(sam_heatmap_path) if sam_heatmap_path is not None else None,
             metrics_path=str(metrics_path) if metrics_path is not None else None,
+            input_preview_paths=input_preview_paths,
             manifest_path=str(manifest_path),
             report_path=str(report_path),
             trace=self.trace,
@@ -322,8 +381,8 @@ class YRE151TiffPatchAgent:
         artifact_rows = "\n".join(f"- `{name}`: `{path}`" for name, path in artifacts.items())
         warning_rows = "\n".join(f"- {warning}" for warning in warnings)
         return (
-            "# RSFusionAgent raw-TIFF inference report\n\n"
-            "- Profile: `yre151_tiff_single_patch_v1`\n"
+            "# RSFusionAgent raw-TIFF experiment inference report\n\n"
+            "- Profile: `yre151_tiff_experiment_patch_v2`\n"
             f"- Device: `{runtime.device}`\n"
             f"- Checkpoint epoch: `{runtime.checkpoint_epoch}`\n"
             f"- Model runtime: `{runtime.runtime_seconds:.6f} s`\n"

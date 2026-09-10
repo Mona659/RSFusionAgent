@@ -28,6 +28,8 @@ from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 from rsfusion_agent.tools.raster_inspector import inspect_raster
 from rsfusion_agent.tools.tiff_crop import (
     CUSTOM_PROFILE,
+    REAL_EXPERIMENT,
+    SIMULATION_EXPERIMENT,
     YRE_LEGACY_TEST_PROFILE,
     crop_tiff_triplet,
 )
@@ -101,7 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     crop_tiff_parser.add_argument("--target-ms", required=True)
     crop_tiff_parser.add_argument(
         "--target-hs-reference",
-        help="Optional target-time HS reference for legacy Database.py-style pseudo-reference metrics.",
+        help="Target-time HS: required ground truth in simulation; optional pseudo-reference in real mode.",
+    )
+    crop_tiff_parser.add_argument(
+        "--experiment-mode",
+        choices=(REAL_EXPERIMENT, SIMULATION_EXPERIMENT),
+        default=REAL_EXPERIMENT,
     )
     crop_tiff_parser.add_argument("--output-dir", required=True)
     crop_tiff_parser.add_argument(
@@ -179,7 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     infer_tiff_parser.add_argument("--checkpoint", required=True)
     infer_tiff_parser.add_argument("--output-dir", required=True)
-    infer_tiff_parser.add_argument("--patch-size", type=int, default=180)
+    infer_tiff_parser.add_argument("--experiment-mode", choices=(REAL_EXPERIMENT, SIMULATION_EXPERIMENT))
+    infer_tiff_parser.add_argument("--patch-size", type=int)
+    infer_tiff_parser.add_argument("--patch-index", type=int)
     infer_tiff_parser.add_argument("--row-offset", type=int, default=0)
     infer_tiff_parser.add_argument("--col-offset", type=int, default=0)
     infer_tiff_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -253,7 +262,9 @@ def build_parser() -> argparse.ArgumentParser:
     tiff_agent_parser.add_argument("--crop-manifest", required=True)
     tiff_agent_parser.add_argument("--checkpoint", required=True)
     tiff_agent_parser.add_argument("--output-dir", required=True)
-    tiff_agent_parser.add_argument("--patch-size", type=int, default=180)
+    tiff_agent_parser.add_argument("--experiment-mode", choices=(REAL_EXPERIMENT, SIMULATION_EXPERIMENT))
+    tiff_agent_parser.add_argument("--patch-size", type=int)
+    tiff_agent_parser.add_argument("--patch-index", type=int)
     tiff_agent_parser.add_argument("--row-offset", type=int, default=0)
     tiff_agent_parser.add_argument("--col-offset", type=int, default=0)
     tiff_agent_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
@@ -316,6 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.target_ms,
                 args.output_dir,
                 target_hs_reference_path=args.target_hs_reference,
+                experiment_mode=args.experiment_mode,
                 profile=args.profile,
                 ms_row_offset=args.ms_row_offset,
                 ms_col_offset=args.ms_col_offset,
@@ -389,10 +401,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         Path(args.target_hs_reference) if args.target_hs_reference else None
                     ),
                     crop_manifest_path=Path(args.crop_manifest) if args.crop_manifest else None,
+                    experiment_mode=args.experiment_mode,
                     checkpoint_path=Path(args.checkpoint),
                     model_python=Path(args.model_python),
                     output_dir=Path(args.output_dir),
                     patch_size=args.patch_size,
+                    patch_index=args.patch_index,
                     row_offset=args.row_offset,
                     col_offset=args.col_offset,
                     device=args.device,
@@ -458,7 +472,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_path=Path(args.checkpoint),
                 model_python=Path(args.model_python),
                 output_dir=Path(args.output_dir),
+                experiment_mode=args.experiment_mode,
                 patch_size=args.patch_size,
+                patch_index=args.patch_index,
                 row_offset=args.row_offset,
                 col_offset=args.col_offset,
                 device=args.device,

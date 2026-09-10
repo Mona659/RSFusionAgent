@@ -186,8 +186,12 @@ def build_agent_command(config: UiRunConfig, *, python_executable: str | None = 
                 config.request,
                 "--crop-manifest",
                 str(config.crop_manifest_path),
+                "--experiment-mode",
+                config.experiment_mode,
                 "--patch-size",
                 str(config.patch_size),
+                "--patch-index",
+                str(config.patch_index),
                 "--row-offset",
                 str(config.row_offset),
                 "--col-offset",
@@ -246,11 +250,13 @@ def build_crop_command(config: UiRunConfig, *, python_executable: str | None = N
         str(config.output_dir / "prepared_crop"),
         "--profile",
         config.crop_profile,
+        "--experiment-mode",
+        config.experiment_mode,
         "--pretty",
     ]
-    if config.experiment_mode == "simulation":
-        if config.target_hs_reference_path is None:
-            raise ValueError("模拟实验需要提供目标时相 HS 参考 TIFF")
+    if config.experiment_mode == "simulation" and config.target_hs_reference_path is None:
+        raise ValueError("模拟实验需要提供目标时相 HS 参考 TIFF")
+    if config.target_hs_reference_path is not None:
         command.extend(("--target-hs-reference", str(config.target_hs_reference_path)))
     if config.crop_profile == "custom":
         required = (
@@ -501,12 +507,13 @@ def _build_config(st: Any) -> UiRunConfig:
                 target_ms = st.text_input(
                     "T2 目标时相 MS TIFF", value=_env_default("RSFUSION_TARGET_MS_TIFF")
                 )
-                if experiment_mode == "simulation":
-                    target_hs_reference = st.text_input(
-                        "T2 目标时相 HS 参考 TIFF（如 ZY2）",
-                        value=_env_default("RSFUSION_TARGET_HS_REFERENCE_TIFF"),
-                    )
-                    st.caption("按原 Database.py：T2 HS 裁剪后线性插值 3 倍，作为伪真值评测。")
+                target_hs_reference = st.text_input(
+                    "T2 目标时相 HS TIFF（模拟实验必填；真实实验可选伪标签）",
+                    value=_env_default("RSFUSION_TARGET_HS_REFERENCE_TIFF"),
+                )
+                st.caption(
+                    "模拟：T2 HS 原始裁剪作为低分辨率真值；真实：若提供则 3×插值后仅作伪标签。"
+                )
         if is_tiff:
             with st.expander("② 裁剪参数", expanded=True):
                 crop_profile = st.selectbox(
@@ -540,24 +547,49 @@ def _build_config(st: Any) -> UiRunConfig:
             llm_model = st.text_input("模型 ID", value=_env_default("RSFUSION_LLM_MODEL"))
             base_url = st.text_input("兼容 API Base URL", value=_env_default("RSFUSION_LLM_BASE_URL"))
             device = st.selectbox("推理设备", ("cuda", "auto", "cpu"))
-            patch_index = (
-                st.number_input("Patch Index", min_value=0, value=0, step=1) if not is_tiff else 0
-            )
-            patch_size = (
-                st.number_input("TIFF 推理 Patch 尺寸", min_value=3, value=180, step=3)
-                if is_tiff
-                else 180
-            )
-            row_offset = (
-                st.number_input("Patch 起始行（相对裁剪结果）", min_value=0, value=0, step=3)
-                if is_tiff
-                else 0
-            )
-            col_offset = (
-                st.number_input("Patch 起始列（相对裁剪结果）", min_value=0, value=0, step=3)
-                if is_tiff
-                else 0
-            )
+            if is_tiff:
+                from rsfusion_agent.tools.tiff_experiment import (
+                    default_patch_size,
+                    output_grid_shape,
+                )
+
+                crop_height = window_height or 540
+                crop_width = window_width or 540
+                output_height, output_width = output_grid_shape(
+                    ms_height=crop_height,
+                    ms_width=crop_width,
+                    experiment_mode=experiment_mode,
+                )
+                patch_size = default_patch_size(experiment_mode)
+                grid_rows, grid_columns = output_height // patch_size, output_width // patch_size
+                total_patches = grid_rows * grid_columns
+                if total_patches < 1:
+                    st.error(
+                        f"当前裁剪输出为 {output_width} × {output_height}，小于该实验的 "
+                        f"{patch_size} × {patch_size} 测试块。"
+                    )
+                    patch_index = 0
+                else:
+                    patch_index = int(
+                        st.number_input(
+                            "TIFF 测试 Patch 编号",
+                            min_value=0,
+                            max_value=total_patches - 1,
+                            value=0,
+                            step=1,
+                        )
+                    )
+                    row_offset = (patch_index // grid_columns) * patch_size
+                    col_offset = (patch_index % grid_columns) * patch_size
+                    st.caption(
+                        f"共 {total_patches} 块（{grid_rows} × {grid_columns}）；当前块位于 "
+                        f"输出网格 row={row_offset}, col={col_offset}。"
+                    )
+                row_offset = (patch_index // grid_columns) * patch_size if total_patches else 0
+                col_offset = (patch_index % grid_columns) * patch_size if total_patches else 0
+            else:
+                patch_index = int(st.number_input("H5 测试 Patch 编号", min_value=0, value=0, step=1))
+                patch_size, row_offset, col_offset = 180, 0, 0
             timeout_seconds = st.number_input("融合超时（秒）", min_value=30, value=600, step=30)
             preflight_timeout = st.number_input("预检超时（秒）", min_value=10, value=60, step=10)
             runtime_retries = st.selectbox("原生崩溃额外重试次数", (0, 1, 2), index=1)
@@ -706,7 +738,42 @@ def _load_crop_preview_cards(crop_result: dict[str, Any]) -> list[tuple[str, dic
     return cards
 
 
-def _render_crop_result(st: Any, execution: UiCropExecution | None) -> None:
+def _load_selected_tiff_patch_cards(
+    manifest_path: Path, config: UiRunConfig
+) -> tuple[Any, list[tuple[str, Any, str]]]:
+    """Build previews from the exact mode-specific tensors that inference will receive."""
+
+    from rsfusion_agent.tools.artifacts import hyperspectral_rgb
+    from rsfusion_agent.tools.tiff_experiment import prepare_experiment_patch_from_manifest
+
+    prepared = prepare_experiment_patch_from_manifest(
+        manifest_path,
+        experiment_mode=config.experiment_mode,
+        patch_size=config.patch_size,
+        patch_index=config.patch_index,
+    )
+    cards: list[tuple[str, Any, str]] = [
+        ("T1 MS 输入块", hyperspectral_rgb(prepared.auxiliary_ms, bands=(2, 1, 0)), "RGB：3 / 2 / 1"),
+        (
+            "T1 HS 输入块",
+            hyperspectral_rgb(prepared.auxiliary_hs_interpolated, bands=(28, 18, 9)),
+            "RGB：29 / 19 / 10",
+        ),
+        ("T2 MS 输入块", hyperspectral_rgb(prepared.target_ms, bands=(2, 1, 0)), "RGB：3 / 2 / 1"),
+    ]
+    if prepared.target_hs_reference is not None:
+        label = "T2 HS 模拟真值块" if config.experiment_mode == "simulation" else "T2 HS 伪标签块"
+        cards.append(
+            (
+                label,
+                hyperspectral_rgb(prepared.target_hs_reference, bands=(28, 18, 9)),
+                "RGB：29 / 19 / 10",
+            )
+        )
+    return prepared, cards
+
+
+def _render_crop_result(st: Any, execution: UiCropExecution | None, config: UiRunConfig) -> None:
     """Show only the deterministic preprocessing result, separate from fusion output."""
 
     if execution is None:
@@ -735,16 +802,23 @@ def _render_crop_result(st: Any, execution: UiCropExecution | None) -> None:
     )
     st.caption(f"清单：{execution.manifest_path}")
     try:
-        cards = _load_crop_preview_cards(execution.result)
+        prepared, cards = _load_selected_tiff_patch_cards(execution.manifest_path, config)
     except (FileNotFoundError, ValueError) as exc:
-        st.warning(f"裁剪预览生成失败：{exc}")
+        st.warning(f"可融合 patch 预览生成失败：{exc}")
         return
     if cards:
-        st.subheader("裁剪结果可视化")
+        selection = prepared.selection
+        st.subheader("裁剪后可融合 Patch 可视化")
+        st.caption(
+            f"共 {selection.total_patch_count} 个测试块（{selection.grid_rows} × "
+            f"{selection.grid_columns}）；当前为 Patch {selection.patch_index}，"
+            f"row={selection.row_offset}, col={selection.col_offset}，"
+            f"大小 {selection.patch_size} × {selection.patch_size}。"
+        )
         columns = st.columns(len(cards))
-        for column, (title, metadata, preview, band_label) in zip(columns, cards, strict=True):
+        for column, (title, preview, band_label) in zip(columns, cards, strict=True):
             column.markdown(f"#### {title}")
-            column.metric("裁剪尺寸", f"{metadata['width']} × {metadata['height']}")
+            column.metric("输入尺寸", f"{selection.patch_size} × {selection.patch_size}")
             column.image(preview, caption=band_label, use_container_width=True)
 
 
@@ -770,10 +844,36 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
 
     _render_preflight(st, result.get("runtime_preflight"))
     fusion = result.get("fusion_result") or {}
+    input_specs = [
+        ("T1 MS 输入测试块", "input_auxiliary_ms_preview"),
+        ("T1 HS 输入测试块", "input_auxiliary_hs_preview"),
+        ("T2 MS 输入测试块", "input_target_ms_preview"),
+    ]
+    if resolve_result_artifact(
+        fusion, output_dir=output_dir, artifact_key="input_target_hs_reference_preview"
+    ):
+        reference_name = (
+            "T2 HS 模拟真值输入块"
+            if fusion.get("metrics_status") == "available_reduced_resolution_ground_truth"
+            else "T2 HS 伪标签输入块"
+        )
+        input_specs.append((reference_name, "input_target_hs_reference_preview"))
+    available_input_specs = [
+        item
+        for item in input_specs
+        if resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=item[1])
+    ]
+    if available_input_specs:
+        st.subheader("输入测试块可视化")
+        input_columns = st.columns(len(available_input_specs))
+        for column, (title, artifact_key) in zip(input_columns, available_input_specs, strict=True):
+            path = resolve_result_artifact(fusion, output_dir=output_dir, artifact_key=artifact_key)
+            if path:
+                column.image(str(path), caption=title, use_container_width=True)
     metrics = fusion.get("metrics") or {}
     if metrics:
-        if fusion.get("metrics_status") == "available_legacy_interpolated_target_hs_reference":
-            st.warning("以下指标基于 Database.py 复现的插值伪真值，不等同于原生高分辨率真值。")
+        if fusion.get("metrics_status") == "available_interpolated_target_hs_pseudo_reference":
+            st.warning("以下指标基于真实实验的插值伪标签，不等同于原生高分辨率真值。")
         st.subheader("融合指标")
         columns = st.columns(3)
         columns[0].metric("PSNR", f"{metrics.get('psnr', 0):.4f}")
@@ -818,10 +918,10 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         fusion, output_dir=output_dir, artifact_key="reference_rgb_preview"
     ):
         reference_title = (
-            "插值伪标签 RGB（同尺度）"
+            "插值伪标签 RGB（真实实验，同尺度）"
             if fusion.get("metrics_status")
-            == "available_legacy_interpolated_target_hs_reference"
-            else "标签 RGB（H5 真值，同尺度）"
+            == "available_interpolated_target_hs_pseudo_reference"
+            else "标签 RGB（模拟实验 / H5 真值，同尺度）"
         )
         image_specs.append((reference_title, "reference_rgb_preview"))
     if resolve_result_artifact(fusion, output_dir=output_dir, artifact_key="sam_heatmap"):
@@ -843,6 +943,10 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         "rgb_preview.png",
         "reference_rgb_preview.png",
         "sam_heatmap.png",
+        "input_auxiliary_ms_preview.png",
+        "input_auxiliary_hs_preview.png",
+        "input_target_ms_preview.png",
+        "input_target_hs_reference_preview.png",
     ):
         path = output_dir / name
         if path.is_file():
@@ -892,7 +996,7 @@ def sorted_stage_records(session_state: Any) -> list[UiStageRecord]:
     return sorted(records, key=lambda item: item.completed_at, reverse=True)
 
 
-def _render_stage_records(st: Any) -> Path | None:
+def _render_stage_records(st: Any, config: UiRunConfig) -> Path | None:
     """Render current-session stage results newest first and preserve older stages."""
 
     records = sorted_stage_records(st.session_state)
@@ -909,7 +1013,7 @@ def _render_stage_records(st: Any) -> Path | None:
                 _render_result(st, record.payload, record.output_dir or Path("."))
                 current_output_dir = record.output_dir
             elif record.stage == "crop":
-                _render_crop_result(st, record.payload)
+                _render_crop_result(st, record.payload, config)
             elif record.stage == "input_check":
                 _render_raw_tiff_input_check(st, record.payload)
             elif record.stage == "preflight":
@@ -1136,7 +1240,7 @@ def run_app() -> None:
                     )
 
     with st.container(border=True):
-        current_output_dir = _render_stage_records(st)
+        current_output_dir = _render_stage_records(st, config)
         _render_history_selector(
             st,
             config.output_dir.parent,

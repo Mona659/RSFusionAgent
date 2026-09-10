@@ -6,7 +6,12 @@ from rasterio.transform import from_origin
 
 from rsfusion_agent.agent.tiff_workflow import TiffFusionRequest, YRE151TiffPatchAgent
 from rsfusion_agent.tools.model_runtime import ModelRuntimeResult
-from rsfusion_agent.tools.tiff_crop import CUSTOM_PROFILE, crop_tiff_triplet
+from rsfusion_agent.tools.tiff_crop import (
+    CUSTOM_PROFILE,
+    SIMULATION_EXPERIMENT,
+    crop_tiff_triplet,
+)
+from rsfusion_agent.tools.tiff_experiment import prepare_experiment_patch_from_manifest
 from rsfusion_agent.tools.tiff_patch import prepare_tiff_patch
 
 
@@ -84,11 +89,22 @@ def test_tiff_workflow_writes_georeferenced_prediction_without_metrics(tmp_path:
             device="cpu",
         )
 
+    crop = crop_tiff_triplet(
+        auxiliary_ms,
+        auxiliary_hs,
+        target_ms,
+        tmp_path / "crops",
+        profile=CUSTOM_PROFILE,
+        ms_row_offset=0,
+        ms_col_offset=0,
+        window_height=12,
+        window_width=12,
+        hs_row_offset=0,
+        hs_col_offset=0,
+    )
     result = YRE151TiffPatchAgent(runtime_runner=fake_runtime).run(
         TiffFusionRequest(
-            auxiliary_ms_path=auxiliary_ms,
-            auxiliary_hs_path=auxiliary_hs,
-            target_ms_path=target_ms,
+            crop_manifest_path=Path(crop.manifest_path),
             checkpoint_path=checkpoint,
             model_python=model_python,
             output_dir=tmp_path / "outputs",
@@ -150,9 +166,14 @@ def test_tiff_workflow_accepts_explicit_crop_manifest(tmp_path: Path) -> None:
 
 
 def test_tiff_workflow_calculates_legacy_pseudo_reference_metrics(tmp_path: Path) -> None:
-    auxiliary_ms, auxiliary_hs, target_ms = _create_triplet(tmp_path)
+    auxiliary_ms = tmp_path / "aux_ms_sim.tif"
+    auxiliary_hs = tmp_path / "aux_hs_sim.tif"
+    target_ms = tmp_path / "target_ms_sim.tif"
+    _write_raster(auxiliary_ms, bands=4, width=27, height=27, resolution=0.5, value=2000.0)
+    _write_raster(auxiliary_hs, bands=151, width=9, height=9, resolution=1.5, value=3000.0)
+    _write_raster(target_ms, bands=4, width=27, height=27, resolution=0.5, value=4000.0)
     target_hs_reference = tmp_path / "target_hs_reference.tif"
-    _write_raster(target_hs_reference, bands=151, width=4, height=4, resolution=1.5, value=6000.0)
+    _write_raster(target_hs_reference, bands=151, width=9, height=9, resolution=1.5, value=6000.0)
 
     def fake_runtime(**kwargs: object) -> ModelRuntimeResult:
         output_npz = Path(str(kwargs["output_npz"]))
@@ -166,22 +187,35 @@ def test_tiff_workflow_calculates_legacy_pseudo_reference_metrics(tmp_path: Path
             device="cpu",
         )
 
+    crop = crop_tiff_triplet(
+        auxiliary_ms,
+        auxiliary_hs,
+        target_ms,
+        tmp_path / "simulation_crops",
+        target_hs_reference_path=target_hs_reference,
+        experiment_mode=SIMULATION_EXPERIMENT,
+        profile=CUSTOM_PROFILE,
+        ms_row_offset=0,
+        ms_col_offset=0,
+        window_height=27,
+        window_width=27,
+        hs_row_offset=0,
+        hs_col_offset=0,
+    )
     result = YRE151TiffPatchAgent(runtime_runner=fake_runtime).run(
         TiffFusionRequest(
-            auxiliary_ms_path=auxiliary_ms,
-            auxiliary_hs_path=auxiliary_hs,
-            target_ms_path=target_ms,
-            target_hs_reference_path=target_hs_reference,
+            crop_manifest_path=Path(crop.manifest_path),
             checkpoint_path=tmp_path / "checkpoint.pth",
             model_python=tmp_path / "python.exe",
             output_dir=tmp_path / "outputs",
-            patch_size=9,
+            experiment_mode=SIMULATION_EXPERIMENT,
+                patch_size=9,
             row_offset=0,
             col_offset=0,
         )
     )
 
-    assert result.metrics_status == "available_legacy_interpolated_target_hs_reference"
+    assert result.metrics_status == "available_reduced_resolution_ground_truth"
     assert result.metrics is not None
     assert result.metrics_path is not None
     assert result.sam_heatmap_path is not None
@@ -189,3 +223,38 @@ def test_tiff_workflow_calculates_legacy_pseudo_reference_metrics(tmp_path: Path
     assert Path(result.metrics_path).is_file()
     assert Path(result.sam_heatmap_path).is_file()
     assert Path(result.reference_rgb_preview_path).is_file()
+
+
+def test_simulation_preparation_preserves_native_target_hs_as_ground_truth(tmp_path: Path) -> None:
+    auxiliary_ms = tmp_path / "aux_ms.tif"
+    auxiliary_hs = tmp_path / "aux_hs.tif"
+    target_ms = tmp_path / "target_ms.tif"
+    target_hs = tmp_path / "target_hs.tif"
+    _write_raster(auxiliary_ms, bands=4, width=18, height=18, resolution=0.5, value=2000.0)
+    _write_raster(auxiliary_hs, bands=151, width=6, height=6, resolution=1.5, value=3000.0)
+    _write_raster(target_ms, bands=4, width=18, height=18, resolution=0.5, value=4000.0)
+    _write_raster(target_hs, bands=151, width=6, height=6, resolution=1.5, value=6000.0)
+    crop = crop_tiff_triplet(
+        auxiliary_ms,
+        auxiliary_hs,
+        target_ms,
+        tmp_path / "crops",
+        target_hs_reference_path=target_hs,
+        experiment_mode=SIMULATION_EXPERIMENT,
+        profile=CUSTOM_PROFILE,
+        ms_row_offset=0,
+        ms_col_offset=0,
+        window_height=18,
+        window_width=18,
+        hs_row_offset=0,
+        hs_col_offset=0,
+    )
+
+    prepared = prepare_experiment_patch_from_manifest(crop.manifest_path, patch_size=6, patch_index=0)
+
+    assert prepared.experiment_mode == SIMULATION_EXPERIMENT
+    assert prepared.reference_kind == "native_target_hs_reduced_resolution_ground_truth"
+    assert prepared.auxiliary_ms.shape == (4, 6, 6)
+    assert prepared.auxiliary_hs_interpolated.shape == (151, 6, 6)
+    assert prepared.target_hs_reference is not None
+    assert np.allclose(prepared.target_hs_reference, 0.6)

@@ -80,6 +80,40 @@ class YRE151PatchAgent:
                 patch_index=request.patch_index,
             ),
         )
+        input_preview_paths = self._step(
+            "render_input_patch_previews",
+            "Rendered the exact common-grid MS/HS tensors selected for this fusion patch.",
+            lambda: {
+                "input_auxiliary_ms_preview": str(
+                    save_rgb_preview(
+                        prepared.auxiliary_ms,
+                        output_dir / "input_auxiliary_ms_preview.png",
+                        bands=(2, 1, 0),
+                    )
+                ),
+                "input_auxiliary_hs_preview": str(
+                    save_rgb_preview(
+                        prepared.auxiliary_hs_interpolated,
+                        output_dir / "input_auxiliary_hs_preview.png",
+                        bands=(28, 18, 9),
+                    )
+                ),
+                "input_target_ms_preview": str(
+                    save_rgb_preview(
+                        prepared.target_ms,
+                        output_dir / "input_target_ms_preview.png",
+                        bands=(2, 1, 0),
+                    )
+                ),
+                "input_target_hs_reference_preview": str(
+                    save_rgb_preview(
+                        prepared.target_hs_gt,
+                        output_dir / "input_target_hs_reference_preview.png",
+                        bands=(28, 18, 9),
+                    )
+                ),
+            },
+        )
         input_npz = self._step(
             "write_model_input",
             "Persisted path-based model inputs for the isolated PyTorch runtime.",
@@ -183,6 +217,7 @@ class YRE151PatchAgent:
             "metrics": str(metrics_path),
             "model_input": str(input_npz),
             "model_output": str(runtime_output),
+            **input_preview_paths,
         }
         manifest_data: dict[str, Any] = {
             "status": "completed",
@@ -212,6 +247,7 @@ class YRE151PatchAgent:
             reference_rgb_preview_path=str(reference_rgb_preview_path),
             sam_heatmap_path=str(sam_heatmap_path),
             metrics_path=str(metrics_path),
+            input_preview_paths=input_preview_paths,
             manifest_path=str(manifest_path),
             report_path=str(report_path),
             trace=self.trace,
