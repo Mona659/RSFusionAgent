@@ -181,6 +181,8 @@ class AgentToolbox:
             "output_dir": self.context.output_dir,
         }
         for label, path in configured_paths.items():
+            if path is None:
+                continue
             raw_path = str(path)
             resolved_path = str(path.expanduser().resolve())
             for candidate in {raw_path, resolved_path, raw_path.replace("\\", "/")}:
@@ -517,7 +519,13 @@ class TiffAgentToolbox:
             "profile": result.profile,
             "experiment_mode": result.experiment_mode,
             "manifest": Path(result.manifest_path).name,
-            "artifacts": {"crop_manifest": str(Path(result.manifest_path).relative_to(self.context.output_dir))},
+            "artifacts": {
+                "crop_manifest": str(
+                    Path(result.manifest_path).resolve().relative_to(
+                        self.context.output_dir.expanduser().resolve()
+                    )
+                )
+            },
             "warnings": result.warnings,
         }
 
@@ -525,11 +533,17 @@ class TiffAgentToolbox:
         message = str(error)
         configured_paths = {
             "crop_manifest_path": self.context.crop_manifest_path,
+            "auxiliary_ms_path": self.context.auxiliary_ms_path,
+            "auxiliary_hs_path": self.context.auxiliary_hs_path,
+            "target_ms_path": self.context.target_ms_path,
+            "target_hs_reference_path": self.context.target_hs_reference_path,
             "checkpoint_path": self.context.checkpoint_path,
             "model_python": self.context.model_python,
             "output_dir": self.context.output_dir,
         }
         for label, path in configured_paths.items():
+            if path is None:
+                continue
             raw_path = str(path)
             resolved_path = str(path.expanduser().resolve())
             for candidate in {raw_path, resolved_path, raw_path.replace("\\", "/")}:
