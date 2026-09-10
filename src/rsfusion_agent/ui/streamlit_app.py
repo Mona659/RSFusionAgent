@@ -524,18 +524,18 @@ def _build_config(st: Any) -> UiRunConfig:
                     else "自定义窗口",
                 )
                 if crop_profile == "yre_legacy_test_v1":
-                    st.caption("MS：起始行 0、起始列 360、大小 540 × 540")
-                    st.caption("HS（T1 与 T2）：起始行 0、起始列 120、大小 180 × 180")
+                    st.caption("MS：起始行 0、起始列 0、大小 540 × 540")
+                    st.caption("HS（T1 与 T2）：起始行 0、起始列 0、大小 180 × 180")
                 else:
                     st.caption("MS 与 HS 分别使用各自原始像素网格；HS 默认对应 MS 的 1/3。")
                     ms_left, ms_right = st.columns(2)
                     ms_row = int(ms_left.number_input("MS 起始行", min_value=0, value=0, step=3))
-                    ms_col = int(ms_right.number_input("MS 起始列", min_value=0, value=360, step=3))
+                    ms_col = int(ms_right.number_input("MS 起始列", min_value=0, value=0, step=3))
                     window_height = int(ms_left.number_input("MS 裁剪高度", min_value=3, value=540, step=3))
                     window_width = int(ms_right.number_input("MS 裁剪宽度", min_value=3, value=540, step=3))
                     hs_left, hs_right = st.columns(2)
                     hs_row = int(hs_left.number_input("HS 起始行", min_value=0, value=0))
-                    hs_col = int(hs_right.number_input("HS 起始列", min_value=0, value=120))
+                    hs_col = int(hs_right.number_input("HS 起始列", min_value=0, value=0))
                     st.caption("HS 裁剪大小自动为 MS 高度/宽度的 1/3。")
         with st.expander("③ 模型与执行", expanded=True):
             checkpoint = st.text_input("Checkpoint", value=_env_default("RSFUSION_CHECKPOINT"))
@@ -597,19 +597,25 @@ def _build_config(st: Any) -> UiRunConfig:
             output_root = st.text_input("输出根目录", value="outputs/ui_runs")
             st.caption(f"当前运行目录：ui_run_{st.session_state['ui_run_id']}")
 
-    request = st.text_area(
-        "自然语言任务",
-        value=(
-            "请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。"
-            if not is_tiff
-            else (
-                "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标。"
-                if experiment_mode == "simulation"
-                else "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
-            )
-        ),
-        height=110,
+    default_request = (
+        "请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。"
+        if not is_tiff
+        else (
+            "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标。"
+            if experiment_mode == "simulation"
+            else "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
+        )
     )
+    with st.form("natural_language_task_form", clear_on_submit=False):
+        request = st.text_area(
+            "自然语言任务",
+            value=default_request,
+            height=110,
+            help="填写任务后点击提交，或在文本框中按 Ctrl+Enter 提交。",
+        )
+        submit_task = st.form_submit_button("提交自然语言任务（Ctrl+Enter）")
+    if submit_task:
+        st.session_state["ui_submit_agent"] = True
     return UiRunConfig(
         request=request,
         checkpoint_path=Path(checkpoint),
@@ -662,7 +668,7 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
 
     if result is None:
         return
-    st.subheader("第一步：原始 TIFF 输入检查")
+    st.subheader("原始 TIFF 输入检查")
     if result.is_ready_for_preprocessing:
         st.success("三景 TIFF 的元数据满足严格预处理契约。")
     else:
@@ -683,7 +689,7 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
     if result.target_hs_reference is not None and result.target_hs_reference_rgb is not None:
         cards.append(
             (
-                "目标时相 HS 参考（伪真值）",
+                "目标时相 HS 参考",
                 result.target_hs_reference,
                 result.target_hs_reference_rgb,
                 "RGB：波段 29 / 19 / 10",
@@ -875,10 +881,13 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         if fusion.get("metrics_status") == "available_interpolated_target_hs_pseudo_reference":
             st.warning("以下指标基于真实实验的插值伪标签，不等同于原生高分辨率真值。")
         st.subheader("融合指标")
-        columns = st.columns(3)
+        columns = st.columns(6)
         columns[0].metric("PSNR", f"{metrics.get('psnr', 0):.4f}")
         columns[1].metric("SAM", f"{metrics.get('sam', 0):.4f}")
         columns[2].metric("SSIM", f"{metrics.get('ssim', 0):.4f}")
+        columns[3].metric("RMSE", f"{metrics.get('rmse', 0):.4f}")
+        columns[4].metric("ERGAS", f"{metrics.get('ergas', 0):.4f}")
+        columns[5].metric("CC", f"{metrics.get('cc', 0):.4f}")
     elif fusion.get("metrics_status"):
         st.info("TIFF 模式：" + str(fusion["metrics_status"]))
 
@@ -1180,7 +1189,9 @@ def run_app() -> None:
                 payload=preflight_payload,
             )
 
-    if run_col.button("执行 Agent 融合", type="primary", use_container_width=True):
+    run_requested = run_col.button("执行 Agent 融合", type="primary", use_container_width=True)
+    run_requested = run_requested or st.session_state.pop("ui_submit_agent", False)
+    if run_requested:
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
