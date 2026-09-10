@@ -6,6 +6,7 @@ from rasterio.transform import from_origin
 
 from rsfusion_agent.ui.streamlit_app import (
     UiRunConfig,
+    _load_crop_preview_cards,
     build_agent_command,
     build_crop_command,
     format_history_label,
@@ -118,6 +119,26 @@ def test_inspect_raw_tiff_inputs_returns_metadata_and_rgb_previews(tmp_path: Pat
     assert result.auxiliary_hs["band_count"] == 151
     assert result.auxiliary_ms_rgb.shape == (8, 8, 3)
     assert result.auxiliary_hs_rgb.shape == (4, 4, 3)
+
+
+def test_crop_preview_cards_render_available_crop_artifacts(tmp_path: Path) -> None:
+    auxiliary_ms = tmp_path / "aux_ms_crop.tif"
+    auxiliary_hs = tmp_path / "aux_hs_crop.tif"
+    target_ms = tmp_path / "target_ms_crop.tif"
+    _write_raster(auxiliary_ms, count=4, height=12, width=12, resolution=3)
+    _write_raster(auxiliary_hs, count=151, height=4, width=4, resolution=9)
+    _write_raster(target_ms, count=4, height=12, width=12, resolution=3)
+
+    cards = _load_crop_preview_cards(
+        {
+            "auxiliary_ms_path": str(auxiliary_ms),
+            "auxiliary_hs_path": str(auxiliary_hs),
+            "target_ms_path": str(target_ms),
+        }
+    )
+
+    assert [card[0] for card in cards] == ["T1 MS 裁剪结果", "T1 HS 裁剪结果", "T2 MS 裁剪结果"]
+    assert all(card[2].shape[-1] == 3 for card in cards)
 
 
 def test_load_json_object_handles_valid_and_invalid_files(tmp_path: Path) -> None:

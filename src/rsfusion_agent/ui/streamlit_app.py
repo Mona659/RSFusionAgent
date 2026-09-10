@@ -6,10 +6,15 @@ import json
 import os
 import subprocess
 import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T")
+WaitReporter = Callable[[float, float], None]
 
 
 @dataclass(frozen=True)
@@ -97,6 +102,26 @@ class RawTiffInputCheck:
     is_ready_for_preprocessing: bool
     blocking_issues: list[str]
     warnings: list[str]
+
+
+def run_with_elapsed(
+    operation: Callable[[], T],
+    *,
+    timeout_seconds: int,
+    on_wait: WaitReporter | None = None,
+) -> T:
+    """Run a blocking local action while accurately reporting elapsed wall-clock time."""
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    started_at = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(operation)
+        while not future.done():
+            if on_wait is not None:
+                on_wait(time.perf_counter() - started_at, float(timeout_seconds))
+            time.sleep(0.2)
+        return future.result()
 
 
 def build_agent_command(config: UiRunConfig, *, python_executable: str | None = None) -> list[str]:
@@ -613,6 +638,42 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
             column.json(metadata)
 
 
+def _load_crop_preview_cards(crop_result: dict[str, Any]) -> list[tuple[str, dict[str, Any], Any, str]]:
+    """Read compact RGB previews for the TIFF crops declared by one manifest."""
+
+    from rsfusion_agent.tools.raster_inspector import inspect_raster
+    from rsfusion_agent.tools.raster_preview import render_raster_rgb
+
+    sources = (
+        ("T1 MS 裁剪结果", "auxiliary_ms_path", (2, 1, 0), "RGB：波段 3 / 2 / 1"),
+        ("T1 HS 裁剪结果", "auxiliary_hs_path", (28, 18, 9), "RGB：波段 29 / 19 / 10"),
+        ("T2 MS 裁剪结果", "target_ms_path", (2, 1, 0), "RGB：波段 3 / 2 / 1"),
+        (
+            "T2 HS 参考裁剪结果",
+            "target_hs_reference_path",
+            (28, 18, 9),
+            "RGB：波段 29 / 19 / 10",
+        ),
+    )
+    cards: list[tuple[str, dict[str, Any], Any, str]] = []
+    for title, path_key, bands, band_label in sources:
+        raw_path = crop_result.get(path_key)
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        cards.append(
+            (
+                title,
+                inspect_raster(path).model_dump(mode="json"),
+                render_raster_rgb(path, bands=bands, max_dimension=512),
+                band_label,
+            )
+        )
+    return cards
+
+
 def _render_crop_result(st: Any, execution: UiCropExecution | None) -> None:
     """Show only the deterministic preprocessing result, separate from fusion output."""
 
@@ -641,6 +702,18 @@ def _render_crop_result(st: Any, execution: UiCropExecution | None) -> None:
         hide_index=True,
     )
     st.caption(f"清单：{execution.manifest_path}")
+    try:
+        cards = _load_crop_preview_cards(execution.result)
+    except (FileNotFoundError, ValueError) as exc:
+        st.warning(f"裁剪预览生成失败：{exc}")
+        return
+    if cards:
+        st.subheader("裁剪结果可视化")
+        columns = st.columns(len(cards))
+        for column, (title, metadata, preview, band_label) in zip(columns, cards, strict=True):
+            column.markdown(f"#### {title}")
+            column.metric("裁剪尺寸", f"{metadata['width']} × {metadata['height']}")
+            column.image(preview, caption=band_label, use_container_width=True)
 
 
 def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> None:
@@ -748,27 +821,61 @@ def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> No
         st.json(result)
 
 
-def _render_history_selector(st: Any, output_root: Path) -> None:
+def _render_history_selector(
+    st: Any,
+    output_root: Path,
+    *,
+    current_output_dir: Path | None = None,
+) -> None:
+    """Render previous runs after the current result, newest first."""
+
     history = list_run_history(output_root)
-    with st.sidebar:
-        st.divider()
-        st.subheader("本地运行历史")
-        if not history:
-            st.caption("当前输出根目录下尚无 agent_result.json。")
-            return
-        selected = st.selectbox("选择历史运行", history, format_func=format_history_label)
-        if st.button("加载历史结果", use_container_width=True):
-            result_path = selected.output_dir / "agent_result.json"
-            result = load_json_object(result_path)
-            if result is not None:
-                st.session_state["ui_execution"] = UiAgentExecution(
-                    return_code=0,
-                    stdout="",
-                    stderr="",
-                    result_path=result_path,
-                    result=result,
-                )
-                st.session_state["ui_output_dir"] = selected.output_dir
+    if current_output_dir is not None:
+        current_resolved = current_output_dir.resolve()
+        history = [item for item in history if item.output_dir.resolve() != current_resolved]
+    st.divider()
+    st.subheader("历史记录")
+    if not history:
+        st.caption("暂无其他已完成的 agent_result.json。")
+        return
+    selected = st.selectbox("选择历史运行", history, format_func=format_history_label)
+    if st.button("加载历史结果", use_container_width=True):
+        result_path = selected.output_dir / "agent_result.json"
+        result = load_json_object(result_path)
+        if result is not None:
+            st.session_state["ui_execution"] = UiAgentExecution(
+                return_code=0,
+                stdout="",
+                stderr="",
+                result_path=result_path,
+                result=result,
+            )
+            st.session_state["ui_output_dir"] = selected.output_dir
+
+
+def _task_wait_reporter(st: Any, task_name: str, timeout_seconds: int) -> tuple[Any, WaitReporter]:
+    """Create one honest per-task progress indicator based on elapsed timeout budget."""
+
+    progress = st.progress(0, text=f"{task_name}：准备开始")
+
+    def report(elapsed_seconds: float, _: float) -> None:
+        percentage = min(95, max(1, int(elapsed_seconds / max(timeout_seconds, 1) * 100)))
+        progress.progress(
+            percentage,
+            text=(
+                f"{task_name}：已等待 {elapsed_seconds:.1f} 秒"
+                f"（超时上限 {timeout_seconds} 秒）"
+            ),
+        )
+
+    return progress, report
+
+
+def _clear_current_result(st: Any) -> None:
+    """Ensure a newly started action is shown before stale fusion output."""
+
+    st.session_state.pop("ui_execution", None)
+    st.session_state.pop("ui_output_dir", None)
 
 
 def run_app() -> None:
@@ -783,7 +890,6 @@ def run_app() -> None:
     st.title("RSFusionAgent · 遥感图像融合 Agent")
     st.caption("本地运行：H5 数据与模型权重不会上传；API Key 仅从终端环境变量读取。")
     config = _build_config(st)
-    _render_history_selector(st, config.output_dir.parent)
 
     previous_crop = st.session_state.get("ui_crop_execution")
     if (
@@ -795,33 +901,37 @@ def run_app() -> None:
         config = replace(config, crop_manifest_path=previous_crop.manifest_path)
 
     st.subheader("功能操作")
-    progress = st.progress(
-        int(st.session_state.get("ui_progress", 0)),
-        text=str(st.session_state.get("ui_progress_text", "等待操作")),
-    )
     if config.input_mode == "tiff":
         check_col, preflight_col, crop_col, run_col = st.columns(4)
         if check_col.button("检查原始 TIFF 输入", use_container_width=True):
+            _clear_current_result(st)
+            st.session_state.pop("ui_crop_execution", None)
+            progress, on_wait = _task_wait_reporter(st, "原始 TIFF 输入检查", 60)
             try:
-                st.session_state["raw_tiff_input_check"] = inspect_raw_tiff_inputs(config)
+                st.session_state["raw_tiff_input_check"] = run_with_elapsed(
+                    lambda: inspect_raw_tiff_inputs(config),
+                    timeout_seconds=60,
+                    on_wait=on_wait,
+                )
             except (FileNotFoundError, RuntimeError, ValueError) as exc:
                 st.error(str(exc))
             else:
-                st.session_state["ui_progress"] = 25
-                st.session_state["ui_progress_text"] = "原始 TIFF 输入检查完成"
-                progress.progress(25, text="原始 TIFF 输入检查完成")
+                progress.progress(100, text="原始 TIFF 输入检查完成")
         if crop_col.button("执行裁剪", use_container_width=True):
-            progress.progress(35, text="正在按配置窗口裁剪原始 TIFF...")
+            _clear_current_result(st)
+            progress, on_wait = _task_wait_reporter(st, "裁剪", config.timeout_seconds)
             try:
-                crop_execution = run_crop_from_ui(replace(config, crop_manifest_path=None))
+                crop_execution = run_with_elapsed(
+                    lambda: run_crop_from_ui(replace(config, crop_manifest_path=None)),
+                    timeout_seconds=config.timeout_seconds,
+                    on_wait=on_wait,
+                )
             except subprocess.TimeoutExpired:
                 st.error("裁剪超时。请检查输入文件和裁剪窗口。")
             else:
                 st.session_state["ui_crop_execution"] = crop_execution
                 if crop_execution.return_code == 0:
-                    st.session_state["ui_progress"] = 50
-                    st.session_state["ui_progress_text"] = "裁剪完成，可执行 Agent 融合"
-                    progress.progress(50, text="裁剪完成，可执行 Agent 融合")
+                    progress.progress(100, text="裁剪完成，可执行 Agent 融合")
         current_paths = (
             config.auxiliary_ms_path.resolve() if config.auxiliary_ms_path else None,
             config.auxiliary_hs_path.resolve() if config.auxiliary_hs_path else None,
@@ -837,30 +947,41 @@ def run_app() -> None:
     if preflight_col.button("预检模型环境", use_container_width=True):
         from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 
+        _clear_current_result(st)
+        progress, on_wait = _task_wait_reporter(st, "模型环境预检", config.preflight_timeout_seconds)
         try:
-            result = preflight_yre151_runtime(
-                checkpoint_path=config.checkpoint_path,
-                model_python=config.model_python,
-                device=config.device,
+            result = run_with_elapsed(
+                lambda: preflight_yre151_runtime(
+                    checkpoint_path=config.checkpoint_path,
+                    model_python=config.model_python,
+                    device=config.device,
+                    timeout_seconds=config.preflight_timeout_seconds,
+                ),
                 timeout_seconds=config.preflight_timeout_seconds,
+                on_wait=on_wait,
             )
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
             st.error(str(exc))
         else:
             st.session_state["ui_preflight"] = result.model_dump(mode="json")
-            st.session_state["ui_progress"] = 50
-            st.session_state["ui_progress_text"] = "模型环境预检完成"
-            progress.progress(50, text="模型环境预检完成")
+            progress.progress(100, text="模型环境预检完成")
 
     if run_col.button("执行 Agent 融合", type="primary", use_container_width=True):
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
+            _clear_current_result(st)
             active_config = config
             if active_config.input_mode == "tiff" and active_config.crop_manifest_path is None:
-                progress.progress(20, text="正在自动执行裁剪...")
+                crop_progress, crop_on_wait = _task_wait_reporter(
+                    st, "Agent 前置自动裁剪", active_config.timeout_seconds
+                )
                 try:
-                    crop_execution = run_crop_from_ui(active_config)
+                    crop_execution = run_with_elapsed(
+                        lambda: run_crop_from_ui(active_config),
+                        timeout_seconds=active_config.timeout_seconds,
+                        on_wait=crop_on_wait,
+                    )
                 except subprocess.TimeoutExpired:
                     st.error("裁剪超时。请检查输入文件和裁剪窗口。")
                     crop_execution = None
@@ -870,34 +991,40 @@ def run_app() -> None:
                         active_config = replace(
                             active_config, crop_manifest_path=crop_execution.manifest_path
                         )
-                        progress.progress(45, text="裁剪完成，正在调用 Agent 与本地模型...")
+                        crop_progress.progress(100, text="Agent 前置自动裁剪完成")
                     else:
                         st.error("自动裁剪失败，未执行 Agent 融合。")
             if active_config.input_mode != "tiff" or active_config.crop_manifest_path is not None:
-                progress.progress(60, text="正在执行预检、Agent 工具调用和本地融合...")
+                agent_timeout = (
+                    active_config.timeout_seconds + active_config.preflight_timeout_seconds + 30
+                )
+                progress, on_wait = _task_wait_reporter(st, "Agent 融合", agent_timeout)
                 try:
-                    execution = run_agent_from_ui(active_config)
+                    execution = run_with_elapsed(
+                        lambda: run_agent_from_ui(active_config),
+                        timeout_seconds=agent_timeout,
+                        on_wait=on_wait,
+                    )
                 except subprocess.TimeoutExpired:
                     st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
                 else:
                     st.session_state["ui_execution"] = execution
                     st.session_state["ui_output_dir"] = active_config.output_dir
-                    st.session_state["ui_progress"] = 100
-                    st.session_state["ui_progress_text"] = "Agent 融合完成"
                     progress.progress(100, text="Agent 融合完成")
 
     execution = st.session_state.get("ui_execution")
     output_dir = st.session_state.get("ui_output_dir")
     with st.container(border=True):
-        st.subheader("运行结果")
-        if raw_input_check and raw_input_check.source_paths == current_paths:
-            _render_raw_tiff_input_check(st, raw_input_check)
-        if config.input_mode == "tiff":
-            _render_crop_result(st, st.session_state.get("ui_crop_execution"))
+        st.subheader("当前结果")
         if execution and output_dir:
             _render_result(st, execution, output_dir)
+        elif config.input_mode == "tiff" and st.session_state.get("ui_crop_execution") is not None:
+            _render_crop_result(st, st.session_state.get("ui_crop_execution"))
+        elif raw_input_check and raw_input_check.source_paths == current_paths:
+            _render_raw_tiff_input_check(st, raw_input_check)
         else:
             _render_preflight(st, st.session_state.get("ui_preflight"))
+        _render_history_selector(st, config.output_dir.parent, current_output_dir=output_dir)
 
 
 def main() -> None:
