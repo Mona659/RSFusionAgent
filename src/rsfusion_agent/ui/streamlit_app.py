@@ -851,6 +851,7 @@ def _render_history_selector(
                 result=result,
             )
             st.session_state["ui_output_dir"] = selected.output_dir
+            st.session_state["ui_current_stage"] = "agent"
 
 
 def _task_wait_reporter(st: Any, task_name: str, timeout_seconds: int) -> tuple[Any, WaitReporter]:
@@ -917,6 +918,7 @@ def run_app() -> None:
                 st.error(str(exc))
             else:
                 progress.progress(100, text="原始 TIFF 输入检查完成")
+                st.session_state["ui_current_stage"] = "input_check"
         if crop_col.button("执行裁剪", use_container_width=True):
             _clear_current_result(st)
             progress, on_wait = _task_wait_reporter(st, "裁剪", config.timeout_seconds)
@@ -932,6 +934,7 @@ def run_app() -> None:
                 st.session_state["ui_crop_execution"] = crop_execution
                 if crop_execution.return_code == 0:
                     progress.progress(100, text="裁剪完成，可执行 Agent 融合")
+                    st.session_state["ui_current_stage"] = "crop"
         current_paths = (
             config.auxiliary_ms_path.resolve() if config.auxiliary_ms_path else None,
             config.auxiliary_hs_path.resolve() if config.auxiliary_hs_path else None,
@@ -965,6 +968,7 @@ def run_app() -> None:
         else:
             st.session_state["ui_preflight"] = result.model_dump(mode="json")
             progress.progress(100, text="模型环境预检完成")
+            st.session_state["ui_current_stage"] = "preflight"
 
     if run_col.button("执行 Agent 融合", type="primary", use_container_width=True):
         if not config.request.strip():
@@ -1011,16 +1015,20 @@ def run_app() -> None:
                     st.session_state["ui_execution"] = execution
                     st.session_state["ui_output_dir"] = active_config.output_dir
                     progress.progress(100, text="Agent 融合完成")
+                    st.session_state["ui_current_stage"] = "agent"
 
     execution = st.session_state.get("ui_execution")
     output_dir = st.session_state.get("ui_output_dir")
+    current_stage = st.session_state.get("ui_current_stage")
     with st.container(border=True):
         st.subheader("当前结果")
-        if execution and output_dir:
+        if current_stage == "agent" and execution and output_dir:
             _render_result(st, execution, output_dir)
-        elif config.input_mode == "tiff" and st.session_state.get("ui_crop_execution") is not None:
+        elif current_stage == "preflight":
+            _render_preflight(st, st.session_state.get("ui_preflight"))
+        elif current_stage == "crop" and config.input_mode == "tiff":
             _render_crop_result(st, st.session_state.get("ui_crop_execution"))
-        elif raw_input_check and raw_input_check.source_paths == current_paths:
+        elif current_stage == "input_check" and raw_input_check and raw_input_check.source_paths == current_paths:
             _render_raw_tiff_input_check(st, raw_input_check)
         else:
             _render_preflight(st, st.session_state.get("ui_preflight"))
