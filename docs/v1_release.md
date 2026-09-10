@@ -6,11 +6,12 @@ for the legacy training pipeline.
 
 ## Accepted input routes
 
-1. **HDF5 evaluation route** — one legacy `DownT1YRE.h5` + `DownT2YRE.h5` patch with
-   target HS ground truth. It produces PSNR, RMSE, SAM, ERGAS, SSIM, CC, RGB and SAM map.
-2. **Raw TIFF route** — `T1 MS + T1 HS + T2 MS`, first cropped through an explicit
+1. **Raw TIFF route (primary)** — `T1 MS + T1 HS + T2 MS`, first checked for source
+   dimensions, bands, spatial metadata and bounded RGB previews, then cropped through an explicit
    `crop_manifest.json`. It produces a target-MS-georeferenced 151-band prediction TIFF
    and RGB preview. Full-reference metrics are unavailable because target HS is absent.
+2. **HDF5 evaluation route (regression)** — one legacy `DownT1YRE.h5` + `DownT2YRE.h5`
+   patch with target HS ground truth. It produces PSNR, RMSE, SAM, ERGAS, SSIM, CC, RGB and SAM map.
 
 ## Verified evidence
 

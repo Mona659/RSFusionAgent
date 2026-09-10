@@ -5,8 +5,9 @@
 An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion.
 
 > **V1.0 scope:** YRE reduced-resolution profile, 151 HS bands and one test patch.
-> It supports both legacy HDF5 evaluation and one raw TIFF crop authorized by a
-> traceable source-pixel manifest. TIFF-to-HDF5 conversion, automatic registration and
+> The primary route starts with raw TIFF input inspection and RGB previews, then a
+> source-pixel crop authorized by a traceable manifest. Legacy HDF5 remains available
+> as a regression-evaluation route. TIFF-to-HDF5 conversion, automatic registration and
 > whole-scene stitching are reserved for later versions.
 
 ## What V1 does
@@ -16,9 +17,10 @@ model to manipulate image arrays:
 
 ```mermaid
 flowchart LR
-    A["YRE HDF5 pair"] --> B["HDF5 inspector"]
-    T["T1 MS + T1 HS + T2 MS TIFF"] --> W["Crop manifest"]
+    T["T1 MS + T1 HS + T2 MS TIFF"] --> V["Metadata + RGB input check"]
+    V --> W["Crop manifest"]
     W --> C["TIFF patch adapter"]
+    A["YRE HDF5 pair (regression)"] --> B["HDF5 inspector"]
     B --> C
     C --> D["Traceable agent state"]
     D --> E["Isolated PyTorch runtime"]
@@ -106,7 +108,7 @@ known legacy limitations.
 - [x] Save a 151-band prediction TIFF, RGB preview and SAM heatmap
 - [x] Save machine-readable metrics, tool trace and Markdown report
 - [x] Check Conda, PyTorch, CUDA and checkpoint readiness before LLM billing
-- [x] Validate three original TIFF inputs before preprocessing (metadata only)
+- [x] Inspect original MS/HS TIFF size, bands, spatial metadata and bounded RGB previews before cropping
 - [x] Crop a raw TIFF triplet with a traceable YRE-legacy or custom source-pixel window
 - [x] Run one crop-manifest authorized raw-TIFF patch and preserve target-MS georeferencing
 - [ ] Convert TIFF triplet to the legacy HDF5 profile
@@ -431,10 +433,11 @@ rsfusion agent-tiff `
 
 ## Run the local visual demo
 
-The local Streamlit interface supports both H5 evaluation and raw TIFF modes. TIFF mode
-collects `T1 MS + T1 HS + T2 MS`, uses the legacy YRE or a custom source-pixel crop window,
-creates a local crop manifest, then invokes `agent-tiff`. H5 mode shows reference metrics
-and a SAM heatmap; TIFF mode correctly labels those metrics as unavailable without target HS.
+The local Streamlit interface defaults to the raw TIFF route. It first checks `T1 MS +
+T1 HS + T2 MS` dimensions, bands, spatial metadata and RGB previews; it then uses the legacy
+YRE or a custom source-pixel crop window, creates a local crop manifest, and invokes
+`agent-tiff`. H5 is the second, regression-evaluation mode: it shows reference metrics and a
+SAM heatmap. TIFF mode correctly labels metrics as unavailable without target HS.
 Install the optional UI dependency once:
 
 ```powershell

@@ -1,21 +1,25 @@
 # RSFusionAgent 3-minute demo script
 
-This script is for a local interview demonstration. Use the preprocessed YRE HDF5
-pair and epoch-200 checkpoint already configured on the demonstration machine. Do not
-show an API key, private absolute paths, or raw dataset files on screen.
+This script is for a local interview demonstration. Use the raw TIFF triplet, the
+preprocessed YRE HDF5 pair and epoch-200 checkpoint already configured on the
+demonstration machine. Do not show an API key, private absolute paths, or raw dataset
+files on screen.
 
 ## 0:00–0:25 — Problem and boundary
 
 > I built a local Agent for YRE spatiotemporal-spectral image fusion. The first version
-> supports a verified H5 evaluation route and a raw-TIFF crop-manifest route. The LLM
+> starts from raw TIFF inspection, crop preprocessing and inference, with a verified H5
+> evaluation route kept for regression metrics. The LLM
 > orchestrates tools; it never receives image arrays or selects arbitrary local paths.
 
 Open the project README architecture diagram, then launch `rsfusion-ui`.
 
 ## 0:25–0:55 — Local safety gate
 
-Show the Streamlit sidebar with the configured H5 pair, checkpoint, model Python and
-CUDA device. Click **预检模型环境**.
+Select **原始 TIFF 模式**, show the three configured inputs, then click **检查原始 TIFF 输入**.
+Point out dimensions, bands and the three RGB previews. Explain that a metadata mismatch is
+visible but does not silently trigger registration: the next crop uses the explicit legacy
+source-pixel correspondence. Then click **预检模型环境**.
 
 > Before any paid model request, the program starts the isolated Conda interpreter and
 > checks PyTorch, CUDA, GPU visibility and checkpoint readability. If it fails, Qwen is

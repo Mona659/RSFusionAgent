@@ -1,14 +1,35 @@
 from pathlib import Path
 
+import numpy as np
+import rasterio
+from rasterio.transform import from_origin
+
 from rsfusion_agent.ui.streamlit_app import (
     UiRunConfig,
     build_agent_command,
     build_crop_command,
     format_history_label,
+    inspect_raw_tiff_inputs,
     list_run_history,
     load_json_object,
     resolve_result_artifact,
 )
+
+
+def _write_raster(path: Path, *, count: int, height: int, width: int, resolution: int) -> None:
+    data = np.arange(count * height * width, dtype=np.float32).reshape(count, height, width)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=height,
+        width=width,
+        count=count,
+        dtype="float32",
+        transform=from_origin(100, 200, resolution, resolution),
+        crs="EPSG:32650",
+    ) as dataset:
+        dataset.write(data)
 
 
 def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Path) -> None:
@@ -65,6 +86,33 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
     assert crop_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "crop-tiff-triplet"]
     assert crop_command[crop_command.index("--profile") + 1] == "custom"
     assert crop_command[crop_command.index("--hs-col-offset") + 1] == "120"
+
+
+def test_inspect_raw_tiff_inputs_returns_metadata_and_rgb_previews(tmp_path: Path) -> None:
+    auxiliary_ms = tmp_path / "aux_ms.tif"
+    auxiliary_hs = tmp_path / "aux_hs.tif"
+    target_ms = tmp_path / "target_ms.tif"
+    _write_raster(auxiliary_ms, count=4, height=12, width=12, resolution=3)
+    _write_raster(target_ms, count=4, height=12, width=12, resolution=3)
+    _write_raster(auxiliary_hs, count=151, height=4, width=4, resolution=9)
+    config = UiRunConfig(
+        request="检查输入 TIFF",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-1",
+        input_mode="tiff",
+        auxiliary_ms_path=auxiliary_ms,
+        auxiliary_hs_path=auxiliary_hs,
+        target_ms_path=target_ms,
+    )
+
+    result = inspect_raw_tiff_inputs(config, preview_max_dimension=8)
+
+    assert result.is_ready_for_preprocessing
+    assert result.auxiliary_ms["width"] == 12
+    assert result.auxiliary_hs["band_count"] == 151
+    assert result.auxiliary_ms_rgb.shape == (8, 8, 3)
+    assert result.auxiliary_hs_rgb.shape == (4, 4, 3)
 
 
 def test_load_json_object_handles_valid_and_invalid_files(tmp_path: Path) -> None:

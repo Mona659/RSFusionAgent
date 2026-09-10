@@ -68,6 +68,22 @@ class UiRunHistoryItem:
     psnr: float | None
 
 
+@dataclass(frozen=True)
+class RawTiffInputCheck:
+    """Metadata and compact RGB previews collected before TIFF cropping."""
+
+    source_paths: tuple[Path, Path, Path]
+    auxiliary_ms: dict[str, Any]
+    auxiliary_hs: dict[str, Any]
+    target_ms: dict[str, Any]
+    auxiliary_ms_rgb: Any
+    auxiliary_hs_rgb: Any
+    target_ms_rgb: Any
+    is_ready_for_preprocessing: bool
+    blocking_issues: list[str]
+    warnings: list[str]
+
+
 def build_agent_command(config: UiRunConfig, *, python_executable: str | None = None) -> list[str]:
     """Build a shell-free CLI command without exposing API keys in arguments."""
 
@@ -188,6 +204,43 @@ def build_crop_command(config: UiRunConfig, *, python_executable: str | None = N
     return command
 
 
+def inspect_raw_tiff_inputs(
+    config: UiRunConfig, *, preview_max_dimension: int = 1024
+) -> RawTiffInputCheck:
+    """Inspect all raw TIFF inputs and render compact RGB previews before cropping."""
+
+    if config.input_mode != "tiff":
+        raise ValueError("Raw TIFF input checks are only available in TIFF mode")
+    if None in (config.auxiliary_ms_path, config.auxiliary_hs_path, config.target_ms_path):
+        raise ValueError("TIFF mode requires auxiliary MS/HS and target MS paths")
+
+    from rsfusion_agent.tools.raster_preview import render_raster_rgb
+    from rsfusion_agent.tools.tiff_triplet import inspect_tiff_triplet
+
+    auxiliary_ms_path = config.auxiliary_ms_path.resolve()
+    auxiliary_hs_path = config.auxiliary_hs_path.resolve()
+    target_ms_path = config.target_ms_path.resolve()
+    inspection = inspect_tiff_triplet(auxiliary_ms_path, auxiliary_hs_path, target_ms_path)
+    return RawTiffInputCheck(
+        source_paths=(auxiliary_ms_path, auxiliary_hs_path, target_ms_path),
+        auxiliary_ms=inspection.auxiliary_ms.model_dump(mode="json"),
+        auxiliary_hs=inspection.auxiliary_hs.model_dump(mode="json"),
+        target_ms=inspection.target_ms.model_dump(mode="json"),
+        auxiliary_ms_rgb=render_raster_rgb(
+            auxiliary_ms_path, bands=(2, 1, 0), max_dimension=preview_max_dimension
+        ),
+        auxiliary_hs_rgb=render_raster_rgb(
+            auxiliary_hs_path, bands=(28, 18, 9), max_dimension=preview_max_dimension
+        ),
+        target_ms_rgb=render_raster_rgb(
+            target_ms_path, bands=(2, 1, 0), max_dimension=preview_max_dimension
+        ),
+        is_ready_for_preprocessing=inspection.is_ready_for_preprocessing,
+        blocking_issues=inspection.blocking_issues,
+        warnings=inspection.warnings,
+    )
+
+
 def load_json_object(path: Path) -> dict[str, Any] | None:
     """Read a result artifact only when it is a valid JSON object."""
 
@@ -303,7 +356,7 @@ def _build_config(st: Any) -> UiRunConfig:
 
     with st.sidebar:
         st.header("运行配置")
-        input_mode = st.radio("输入模式", ("H5 演示模式", "原始 TIFF 模式"), horizontal=True)
+        input_mode = st.radio("输入模式", ("原始 TIFF 模式", "H5 演示模式"), horizontal=True)
         is_tiff = input_mode == "原始 TIFF 模式"
         auxiliary = target = ""
         auxiliary_ms = auxiliary_hs = target_ms = ""
@@ -413,6 +466,42 @@ def _render_preflight(st: Any, payload: dict[str, Any] | None) -> None:
     columns[3].metric("Checkpoint", f"epoch {payload.get('checkpoint_epoch', 'unknown')}")
     with st.expander("查看预检 JSON"):
         st.json(payload)
+
+
+def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> None:
+    """Render the no-cost raw input stage that precedes crop-manifest creation."""
+
+    if result is None:
+        return
+    st.subheader("第一步：原始 TIFF 输入检查")
+    if result.is_ready_for_preprocessing:
+        st.success("三景 TIFF 的元数据满足严格预处理契约。")
+    else:
+        st.warning(
+            "检测到源 TIFF 的空间网格或波段存在差异。当前 YRE 数据可继续按明确的"
+            "源像素裁剪窗口生成 crop manifest；系统不会自动配准、重投影或重采样。"
+        )
+        for issue in result.blocking_issues:
+            st.caption(f"检查项：{issue}")
+    for warning in result.warnings:
+        st.caption(f"提示：{warning}")
+
+    columns = st.columns(3)
+    cards = (
+        ("辅助时相 MS", result.auxiliary_ms, result.auxiliary_ms_rgb, "RGB：波段 3 / 2 / 1"),
+        ("辅助时相 HS", result.auxiliary_hs, result.auxiliary_hs_rgb, "RGB：波段 29 / 19 / 10"),
+        ("目标时相 MS", result.target_ms, result.target_ms_rgb, "RGB：波段 3 / 2 / 1"),
+    )
+    for column, (title, metadata, preview, band_label) in zip(columns, cards, strict=True):
+        column.markdown(f"#### {title}")
+        column.metric("原始尺寸", f"{metadata['width']} × {metadata['height']}")
+        column.caption(
+            f"{metadata['band_count']} bands · {metadata['dtypes'][0]} · "
+            f"分辨率 {metadata['resolution'][0]:g} × {metadata['resolution'][1]:g}"
+        )
+        column.image(preview, caption=band_label, use_container_width=True)
+        with column.expander("查看完整元数据"):
+            column.json(metadata)
 
 
 def _render_result(st: Any, execution: UiAgentExecution, output_dir: Path) -> None:
@@ -554,7 +643,23 @@ def run_app() -> None:
     config = _build_config(st)
     _render_history_selector(st, config.output_dir.parent)
 
-    preflight_col, run_col = st.columns(2)
+    if config.input_mode == "tiff":
+        check_col, preflight_col, run_col = st.columns(3)
+        if check_col.button("检查原始 TIFF 输入", use_container_width=True):
+            try:
+                st.session_state["raw_tiff_input_check"] = inspect_raw_tiff_inputs(config)
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                st.error(str(exc))
+        current_paths = (
+            config.auxiliary_ms_path.resolve() if config.auxiliary_ms_path else None,
+            config.auxiliary_hs_path.resolve() if config.auxiliary_hs_path else None,
+            config.target_ms_path.resolve() if config.target_ms_path else None,
+        )
+        raw_input_check = st.session_state.get("raw_tiff_input_check")
+        if raw_input_check and raw_input_check.source_paths == current_paths:
+            _render_raw_tiff_input_check(st, raw_input_check)
+    else:
+        preflight_col, run_col = st.columns(2)
     if preflight_col.button("预检模型环境", use_container_width=True):
         from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 
