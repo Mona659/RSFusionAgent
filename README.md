@@ -13,9 +13,7 @@ An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion
 > `T2 HS` as reduced-resolution ground truth; real keeps full-resolution MS and interpolates HS.
 > A real-mode `T2 HS` is only a pseudo-label, never a native high-resolution ground truth.
 
-开发过程中的问题、解决方案、关键技术和面试表述见：[V1.0 开发总结](docs/v1_development_summary.md)。
 
-V2 五日计划见：[V2 五日开发计划](docs/v2_five_day_plan.md)。第一天已完成 LangChain
 Core 适配：现有 H5/TIFF 工具箱可通过 `StructuredTool` 暴露，仍复用 V1 的参数校验、
 工具白名单、前置依赖和本地错误脱敏；安装额外依赖后可用
 `LangChainToolAgent` 做本地工具调用烟囱测试。V1 的 Qwen Responses API 循环保持不变。
