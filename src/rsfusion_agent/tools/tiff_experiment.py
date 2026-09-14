@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
 import numpy as np
 import rasterio
 from rasterio import Affine
@@ -149,21 +148,64 @@ def _read(path: str, window: Window) -> np.ndarray:
 
 def _resize(array: np.ndarray, *, height: int, width: int) -> np.ndarray:
     output = np.empty((array.shape[0], height, width), dtype=np.float32)
-    for band_index, band in enumerate(array):
-        output[band_index] = cv2.resize(band, (width, height), interpolation=cv2.INTER_LINEAR)
+    try:
+        import cv2
+    except ImportError:
+        try:
+            from scipy.ndimage import zoom
+        except ImportError:
+            from skimage.transform import resize
+
+            for band_index, band in enumerate(array):
+                output[band_index] = resize(
+                    band,
+                    (height, width),
+                    order=1,
+                    preserve_range=True,
+                    anti_aliasing=False,
+                )
+        else:
+            row_scale = height / array.shape[1]
+            col_scale = width / array.shape[2]
+            for band_index, band in enumerate(array):
+                output[band_index] = zoom(band, (row_scale, col_scale), order=1)
+    else:
+        for band_index, band in enumerate(array):
+            output[band_index] = cv2.resize(
+                band, (width, height), interpolation=cv2.INTER_LINEAR
+            )
     return np.ascontiguousarray(output)
 
 
 def _blur(array: np.ndarray) -> np.ndarray:
-    output = np.empty_like(array, dtype=np.float32)
-    for band_index, band in enumerate(array):
-        output[band_index] = cv2.GaussianBlur(
-            band,
-            (GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_SIZE),
-            sigmaX=GAUSSIAN_SIGMA,
-            sigmaY=GAUSSIAN_SIGMA,
-            borderType=cv2.BORDER_DEFAULT,
-        )
+    try:
+        import cv2
+    except ImportError:
+        try:
+            from scipy.ndimage import gaussian_filter
+        except ImportError:
+            from skimage.filters import gaussian
+
+            output = gaussian(
+                array,
+                sigma=(0, GAUSSIAN_SIGMA, GAUSSIAN_SIGMA),
+                preserve_range=True,
+                channel_axis=0,
+            ).astype(np.float32, copy=False)
+        else:
+            output = gaussian_filter(
+                array, sigma=(0, GAUSSIAN_SIGMA, GAUSSIAN_SIGMA), mode="reflect"
+            ).astype(np.float32, copy=False)
+    else:
+        output = np.empty_like(array, dtype=np.float32)
+        for band_index, band in enumerate(array):
+            output[band_index] = cv2.GaussianBlur(
+                band,
+                (GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_SIZE),
+                sigmaX=GAUSSIAN_SIGMA,
+                sigmaY=GAUSSIAN_SIGMA,
+                borderType=cv2.BORDER_DEFAULT,
+            )
     return np.ascontiguousarray(output)
 
 
