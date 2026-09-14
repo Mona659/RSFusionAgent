@@ -16,6 +16,7 @@ from rsfusion_agent.agent.tiff_workflow import (
     YRE151TiffPatchAgent,
 )
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
+from rsfusion_agent.rag.retriever import LocalKnowledgeRetriever
 from rsfusion_agent.tools.error_diagnosis import diagnose_error
 from rsfusion_agent.tools.h5_patch import H5PairInspection, inspect_h5_pair
 from rsfusion_agent.tools.raster_inspector import inspect_raster
@@ -35,6 +36,7 @@ class LLMToolContext(BaseModel):
     device: str = "auto"
     timeout_seconds: int = Field(default=600, gt=0)
     runtime_retries: int = Field(default=1, ge=0, le=2)
+    knowledge_dir: Path | None = None
 
 
 class PatchIndexArguments(BaseModel):
@@ -115,6 +117,21 @@ class AgentToolbox:
                 "parameters": empty_schema,
                 "strict": True,
             },
+            {
+                "type": "function",
+                "name": "search_knowledge",
+                "description": "Search the local project knowledge base and return sources.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1},
+                        "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -162,6 +179,21 @@ class AgentToolbox:
             if self.latest_result is None:
                 raise ValueError("No fusion result is available in this agent session")
             return self._result_summary(self.latest_result)
+
+        if name == "search_knowledge":
+            if self.context.knowledge_dir is None:
+                raise ValueError("No local knowledge directory is configured")
+            query = arguments.get("query")
+            top_k = arguments.get("top_k", 4)
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("search_knowledge requires a non-empty query")
+            retriever = LocalKnowledgeRetriever.from_directory(self.context.knowledge_dir)
+            results = retriever.search(query, top_k=int(top_k))
+            return {
+                "ok": True,
+                "query": query,
+                "results": [result.__dict__ for result in results],
+            }
 
         raise ValueError(f"Tool is not allowlisted: {name}")
 
@@ -276,6 +308,7 @@ class TiffLLMToolContext(BaseModel):
     device: str = "auto"
     timeout_seconds: int = Field(default=600, gt=0)
     runtime_retries: int = Field(default=1, ge=0, le=2)
+    knowledge_dir: Path | None = None
 
 
 TiffWorkflowFactory = Callable[[], YRE151TiffPatchAgent]
@@ -361,10 +394,25 @@ class TiffAgentToolbox:
                 "parameters": empty_schema,
                 "strict": True,
             },
+            {
+                "type": "function",
+                "name": "search_knowledge",
+                "description": "Search the local project knowledge base and return sources.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1},
+                        "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if arguments:
+        if name != "search_knowledge" and arguments:
             raise ValueError(f"{name} does not accept arguments")
         if name == "get_runtime_preflight":
             return self._preflight_summary()
@@ -426,6 +474,20 @@ class TiffAgentToolbox:
             if self.latest_result is None:
                 raise ValueError("No TIFF fusion result is available in this agent session")
             return self._result_summary(self.latest_result)
+        if name == "search_knowledge":
+            if self.context.knowledge_dir is None:
+                raise ValueError("No local knowledge directory is configured")
+            query = arguments.get("query")
+            top_k = arguments.get("top_k", 4)
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("search_knowledge requires a non-empty query")
+            retriever = LocalKnowledgeRetriever.from_directory(self.context.knowledge_dir)
+            results = retriever.search(query, top_k=int(top_k))
+            return {
+                "ok": True,
+                "query": query,
+                "results": [result.__dict__ for result in results],
+            }
         raise ValueError(f"Tool is not allowlisted: {name}")
 
     def _preflight_summary(self) -> dict[str, Any]:

@@ -13,16 +13,20 @@ An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion
 > `T2 HS` as reduced-resolution ground truth; real keeps full-resolution MS and interpolates HS.
 > A real-mode `T2 HS` is only a pseudo-label, never a native high-resolution ground truth.
 
-开发过程中的问题、解决方案、关键技术和面试表述见：[V1.0 开发总结](docs/v1_development_summary.md)。
+项目设计说明、问题分析和关键技术见：[开发总结](docs/v1_development_summary.md)。
 
-V2 五日计划见：[V2 五日开发计划](docs/v2_five_day_plan.md)。第一天已完成 LangChain
-Core 适配：现有 H5/TIFF 工具箱可通过 `StructuredTool` 暴露，仍复用 V1 的参数校验、
-工具白名单、前置依赖和本地错误脱敏；安装额外依赖后可用
-`LangChainToolAgent` 做本地工具调用烟囱测试。V1 的 Qwen Responses API 循环保持不变。
+当前版本在 V1 的可追溯遥感融合工作流基础上，增加了 LangChain Core 工具适配和本地
+RAG 知识检索能力。现有 H5/TIFF 工具箱可通过 `StructuredTool` 暴露，继续复用参数校验、
+工具白名单、前置依赖和本地错误脱敏；Qwen Responses API 循环保持兼容。
 
 ```powershell
 python -m pip install -e ".[dev,langchain]"
 ```
+
+系统提供离线本地 RAG 知识库。知识库位于 `knowledge/`，支持 Markdown/JSON，使用词法
+检索返回相关片段和来源，不依赖在线 Embedding 或向量数据库。CLI Agent 可通过
+`--knowledge-dir knowledge` 开启 `search_knowledge` 工具：
+在已有 `agent-tiff` 命令中追加 `--knowledge-dir knowledge` 即可启用该工具。
 
 ## V1.0 feature summary
 

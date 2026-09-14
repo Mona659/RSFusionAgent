@@ -30,7 +30,10 @@ before the run tool. Never run fusion unless the user explicitly asks to fuse, i
 generate a fusion result. The runtime preflight is already computed locally; call
 get_runtime_preflight only when the user explicitly asks about the runtime environment.
 Do not ask the user to reply with confirmation: every request is a self-contained execution.
-If a tool returns an error, explain it or choose a safe recovery tool. Answer in the user's language.
+For questions about project procedures, data contracts, model behavior or prior guidance,
+call search_knowledge first and cite the returned source names in your answer. Do not claim
+knowledge-base support when the tool returned no matching results. If a tool returns an error,
+explain it or choose a safe recovery tool. Answer in the user's language.
 """
 
 

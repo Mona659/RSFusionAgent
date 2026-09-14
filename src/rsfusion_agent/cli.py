@@ -209,6 +209,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument("--target-h5", required=True)
     agent_parser.add_argument("--checkpoint", required=True)
     agent_parser.add_argument("--output-dir", required=True)
+    agent_parser.add_argument(
+        "--knowledge-dir", help="Local Markdown/JSON knowledge base for search_knowledge."
+    )
     agent_parser.add_argument("--patch-index", type=int, default=0)
     agent_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     agent_parser.add_argument(
@@ -276,6 +279,9 @@ def build_parser() -> argparse.ArgumentParser:
     tiff_agent_parser.add_argument("--hs-col-offset", type=int)
     tiff_agent_parser.add_argument("--checkpoint", required=True)
     tiff_agent_parser.add_argument("--output-dir", required=True)
+    tiff_agent_parser.add_argument(
+        "--knowledge-dir", help="Local Markdown/JSON knowledge base for search_knowledge."
+    )
     tiff_agent_parser.add_argument("--experiment-mode", choices=(REAL_EXPERIMENT, SIMULATION_EXPERIMENT))
     tiff_agent_parser.add_argument("--patch-size", type=int)
     tiff_agent_parser.add_argument("--patch-index", type=int)
@@ -442,6 +448,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_path=Path(args.checkpoint),
                 model_python=Path(args.model_python),
                 output_dir=Path(args.output_dir),
+                knowledge_dir=Path(args.knowledge_dir) if args.knowledge_dir else None,
                 patch_index=args.patch_index,
                 device=args.device,
                 timeout_seconds=args.timeout,
@@ -499,6 +506,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint_path=Path(args.checkpoint),
                 model_python=Path(args.model_python),
                 output_dir=Path(args.output_dir),
+                knowledge_dir=Path(args.knowledge_dir) if args.knowledge_dir else None,
                 experiment_mode=args.experiment_mode,
                 patch_size=args.patch_size,
                 patch_index=args.patch_index,
