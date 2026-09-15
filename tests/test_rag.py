@@ -35,4 +35,4 @@ def test_curated_project_knowledge_answers_real_experiment_input_question() -> N
     results = retriever.search("真实实验输入数据要求", top_k=3)
 
     assert results
-    assert any(result.source == "data\\input_contract.md" for result in results)
+    assert any(Path(result.source).as_posix() == "data/input_contract.md" for result in results)
