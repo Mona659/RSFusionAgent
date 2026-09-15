@@ -1,0 +1,47 @@
+[
+  {
+    "id": "real-inputs",
+    "query": "真实实验需要哪些输入数据？",
+    "expected_sources": ["data/input_contract.md"]
+  },
+  {
+    "id": "simulation-ground-truth",
+    "query": "模拟实验的目标 HS 是什么？",
+    "expected_sources": ["data/input_contract.md", "workflows/experiment_contract.md"]
+  },
+  {
+    "id": "real-pseudo-reference",
+    "query": "真实实验的指标是否是原生真值？",
+    "expected_sources": ["data/input_contract.md", "workflows/experiment_contract.md"]
+  },
+  {
+    "id": "h5-contract",
+    "query": "H5 演示模式是否需要重复 TIFF 裁剪？",
+    "expected_sources": ["data/input_contract.md", "workflows/experiment_contract.md"]
+  },
+  {
+    "id": "model-inputs",
+    "query": "YRE 151 波段模型的输入是什么？",
+    "expected_sources": ["model/runtime.md"]
+  },
+  {
+    "id": "local-data-safety",
+    "query": "模型权重和影像数组会发送给大模型吗？",
+    "expected_sources": ["model/runtime.md"]
+  },
+  {
+    "id": "patch-error",
+    "query": "Patch size exceeds output extent 应该怎么解决？",
+    "expected_sources": ["errors/common.md"]
+  },
+  {
+    "id": "manifest-error",
+    "query": "No crop manifest is available 如何处理？",
+    "expected_sources": ["errors/common.md"]
+  },
+  {
+    "id": "preflight-error",
+    "query": "No runtime preflight result 应该怎么办？",
+    "expected_sources": ["errors/common.md"]
+  }
+]

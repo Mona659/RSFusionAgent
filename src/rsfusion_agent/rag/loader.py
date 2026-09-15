@@ -24,6 +24,10 @@ def load_documents(root: str | Path) -> list[SourceDocument]:
     for path in sorted(directory.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in {".md", ".json"}:
             continue
+        # Evaluation prompts describe expected answers and must never become retrievable
+        # evidence for the production RAG path.
+        if "evaluations" in path.relative_to(directory).parts:
+            continue
         if path.suffix.lower() == ".md":
             text = path.read_text(encoding="utf-8")
         else:

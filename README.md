@@ -30,6 +30,36 @@ RAG 知识检索能力。现有 H5/TIFF 工具箱可通过 `StructuredTool` 暴�
 每个 UI 运行目录还维护只含阶段名的 `task_state.json`。输入检查、裁剪、预检和 Agent 工具调用
 均会更新它；后续“查看当前任务状态”会读取该文件，而不保存影像数组、模型权重或 API Key。
 
+### Reliable execution, observability and RAG evaluation
+
+The persisted task state is also used to construct an explicit execution plan in the UI:
+input validation, runtime preflight, TIFF crop preparation when required, fusion and result export.
+Each plan step is marked as completed, ready or blocked, with the missing dependency shown before
+the user starts a costly model action. Known failures such as a missing crop manifest, missing
+simulation T2 HS, a Patch-size overflow and model-environment errors are translated into a safe
+next action.
+
+Every natural-language Agent run writes two local, shareable artifacts next to `agent_result.json`:
+
+- `execution_trace.json`: tool name, status, elapsed time, argument field names, Token/cost summary,
+  persisted task state and recovery guidance. It intentionally excludes argument values, image arrays,
+  checkpoint contents and API keys.
+- `agent_execution_report.md`: a concise human-readable execution report generated from the same trace.
+
+The local RAG layer has a versioned source-hit evaluation set under `knowledge/evaluations/`. Evaluation
+questions are excluded from production retrieval, preventing prompts or expected answers from being used
+as evidence. Run it without an LLM call:
+
+```powershell
+python -m rsfusion_agent.cli evaluate-rag `
+  --knowledge-dir knowledge `
+  --output outputs/rag_evaluation.json `
+  --pretty
+```
+
+`source_hit_rate` measures whether an expected local source appears in the top-k retrieval results; it is
+a retrieval regression signal, not a substitute for human review of answer correctness.
+
 ```powershell
 python -m pip install -e ".[dev,langchain]"
 ```

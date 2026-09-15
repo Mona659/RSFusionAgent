@@ -22,9 +22,14 @@ from rsfusion_agent.agent.llm_tools import (
     TiffLLMToolContext,
 )
 from rsfusion_agent.agent.llm_workflow import LLMFusionAgent
+from rsfusion_agent.agent.observability import write_execution_observability
 from rsfusion_agent.agent.state import FusionRunRequest
 from rsfusion_agent.agent.tiff_workflow import TiffFusionRequest, YRE151TiffPatchAgent
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
+from rsfusion_agent.rag.evaluation import (
+    evaluate_knowledge_directory,
+    write_rag_evaluation_report,
+)
 from rsfusion_agent.tools.h5_patch import inspect_h5_pair
 from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 from rsfusion_agent.tools.raster_inspector import inspect_raster
@@ -54,6 +59,18 @@ def _write_json_file(path: Path, payload: dict, *, indent: int | None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, ensure_ascii=False, indent=indent)
     path.write_text(f"{text}\n", encoding="utf-8")
+
+
+def _write_agent_artifacts(args: argparse.Namespace, payload: dict, *, indent: int | None) -> None:
+    """Persist the raw result plus a compact trace/report for replay and diagnosis."""
+
+    output_dir = Path(args.output_dir)
+    _write_json_file(output_dir / "agent_result.json", payload, indent=indent)
+    write_execution_observability(
+        output_dir,
+        payload,
+        task_state_path=Path(args.task_state_path) if args.task_state_path else None,
+    )
 
 
 def _preflight_from_args(args: argparse.Namespace):
@@ -282,6 +299,19 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--max-turns", type=int, default=4)
     query_parser.add_argument("--pretty", action="store_true")
 
+    evaluation_parser = subparsers.add_parser(
+        "evaluate-rag",
+        help="Evaluate local RAG source retrieval against a versioned offline question set.",
+    )
+    evaluation_parser.add_argument("--knowledge-dir", required=True)
+    evaluation_parser.add_argument(
+        "--evaluation-file",
+        help="Defaults to <knowledge-dir>/evaluations/rag_eval.json.",
+    )
+    evaluation_parser.add_argument("--output", help="Optional JSON report output path.")
+    evaluation_parser.add_argument("--top-k", type=int, default=3)
+    evaluation_parser.add_argument("--pretty", action="store_true")
+
     tiff_agent_parser = subparsers.add_parser(
         "agent-tiff",
         help="Use natural language to run one crop-manifest TIFF fusion through allowlisted tools.",
@@ -338,6 +368,24 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "evaluate-rag":
+        evaluation_file = (
+            Path(args.evaluation_file)
+            if args.evaluation_file
+            else Path(args.knowledge_dir) / "evaluations" / "rag_eval.json"
+        )
+        try:
+            result = evaluate_knowledge_directory(
+                args.knowledge_dir, evaluation_file, top_k=args.top_k
+            )
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(str(exc))
+        if args.output:
+            write_rag_evaluation_report(args.output, result)
+        indent = 2 if args.pretty else None
+        _emit_json(result.model_dump(mode="json"), indent=indent)
+        return 0
 
     if args.command == "inspect-raster":
         try:
@@ -511,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
         payload = result.model_dump(mode="json")
-        _write_json_file(Path(args.output_dir) / "agent_result.json", payload, indent=indent)
+        _write_agent_artifacts(args, payload, indent=indent)
         _emit_json(payload, indent=indent)
         return 0
 
@@ -542,7 +590,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
         payload = result.model_dump(mode="json")
-        _write_json_file(Path(args.output_dir) / "agent_result.json", payload, indent=indent)
+        _write_agent_artifacts(args, payload, indent=indent)
         _emit_json(payload, indent=indent)
         return 0
 
@@ -606,7 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         indent = 2 if args.pretty else None
         payload = result.model_dump(mode="json")
-        _write_json_file(Path(args.output_dir) / "agent_result.json", payload, indent=indent)
+        _write_agent_artifacts(args, payload, indent=indent)
         _emit_json(payload, indent=indent)
         return 0
 

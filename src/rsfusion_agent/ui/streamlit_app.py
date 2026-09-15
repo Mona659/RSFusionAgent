@@ -21,6 +21,8 @@ from rsfusion_agent.agent.intent_router import (
     rule_based_intent,
 )
 from rsfusion_agent.agent.llm_client import CompatibleResponsesClient, resolve_provider_settings
+from rsfusion_agent.agent.observability import write_execution_observability
+from rsfusion_agent.agent.task_plan import build_task_execution_plan
 from rsfusion_agent.agent.task_state import load_task_state, save_task_state
 
 T = TypeVar("T")
@@ -77,6 +79,7 @@ class UiAgentExecution:
     result_path: Path
     result: dict[str, Any] | None
     intent_routing: IntentRoutingResult | None = None
+    observability_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -747,6 +750,16 @@ def run_agent_from_ui(
             "界面已拒绝复用旧文件。请查看以下 CLI 输出定位原因。"
         )
         stderr = f"{stderr}\n{stale_message}".strip()
+    observability_paths: tuple[Path, ...] = ()
+    if result is not None:
+        try:
+            observability_paths = write_execution_observability(
+                config.output_dir,
+                result,
+                task_state_path=config.output_dir / "task_state.json",
+            )
+        except OSError as exc:
+            stderr = f"{stderr}\n无法写入 V2.1 Trace：{exc}".strip()
     return UiAgentExecution(
         return_code=completed.returncode,
         stdout=completed.stdout,
@@ -754,6 +767,7 @@ def run_agent_from_ui(
         result_path=result_path,
         result=result,
         intent_routing=intent_routing,
+        observability_paths=observability_paths,
     )
 
 
@@ -1349,6 +1363,68 @@ def _render_markdown_table(
     st.markdown("\n".join([header, separator, *body]))
 
 
+def _render_task_execution_plan(
+    st: Any, config: UiRunConfig, *, crop_manifest_available: bool
+) -> None:
+    """Expose the persisted state-machine plan before the user starts a costly action."""
+
+    state = load_task_state(config.output_dir / "task_state.json")
+    plan = build_task_execution_plan(
+        state,
+        input_mode=config.input_mode,
+        crop_manifest_available=crop_manifest_available,
+    )
+    with st.container(border=True):
+        st.subheader("任务执行计划")
+        _render_markdown_table(
+            st,
+            [
+                {
+                    "步骤": step.label,
+                    "状态": step.status.value,
+                    "说明": step.detail,
+                    "阻塞项": "、".join(step.blocked_by) or "-",
+                }
+                for step in plan.steps
+            ],
+            [("步骤", "步骤"), ("状态", "状态"), ("说明", "说明"), ("阻塞项", "阻塞项")],
+        )
+        st.info("下一步建议：" + plan.next_action)
+
+
+def _render_execution_observability(st: Any, output_dir: Path) -> None:
+    """Render the persisted V2.1 trace, independent of raw model result details."""
+
+    payload = load_json_object(output_dir / "execution_trace.json")
+    if payload is None:
+        return
+    st.subheader("执行 Trace 与恢复建议")
+    tools = payload.get("tools") or []
+    if isinstance(tools, list):
+        _render_markdown_table(
+            st,
+            [
+                {
+                    "工具": item.get("tool"),
+                    "状态": item.get("status"),
+                    "耗时（秒）": round(float(item.get("elapsed_seconds", 0)), 3),
+                    "参数字段": ", ".join(item.get("argument_keys") or []) or "-",
+                }
+                for item in tools
+                if isinstance(item, dict)
+            ],
+            [
+                ("工具", "工具"),
+                ("状态", "状态"),
+                ("耗时（秒）", "耗时（秒）"),
+                ("参数字段", "参数字段"),
+            ],
+        )
+    for action in payload.get("recovery_actions") or []:
+        if isinstance(action, dict):
+            st.warning(f"{action.get('summary', '')} 建议：{action.get('action', '')}")
+
+
 def _render_crop_result(st: Any, execution: UiCropExecution | None, config: UiRunConfig) -> None:
     """Show only the deterministic preprocessing result, separate from fusion output."""
 
@@ -1509,6 +1585,7 @@ def _render_result(
         _render_intent_routing(st, execution.intent_routing)
     _render_agent_conversation(st, result)
     _render_retrieval_evidence(st, result)
+    _render_execution_observability(st, output_dir)
 
     called_tools = {str(item.get("name")) for item in result.get("trace") or []}
     if "get_runtime_preflight" in called_tools or any(
@@ -1654,6 +1731,8 @@ def _render_result(
         "intent_decision.json",
         "task_state.json",
         "agent_result.json",
+        "execution_trace.json",
+        "agent_execution_report.md",
         "metrics.json",
         "run_manifest.json",
         "predicted_hs.tif",
@@ -1856,6 +1935,11 @@ def run_app() -> None:
     if reusing_crop:
         config = replace(config, crop_manifest_path=reusable_manifest)
 
+    _render_task_execution_plan(
+        st,
+        config,
+        crop_manifest_available=bool(reusing_crop),
+    )
     st.subheader("功能操作")
     if reusing_crop:
         st.caption(f"已复用本次配置的裁剪清单，不会重复裁剪：{reusable_manifest}")
