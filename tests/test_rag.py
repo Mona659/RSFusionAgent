@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from rsfusion_agent.rag.retriever import LocalKnowledgeRetriever
 
@@ -25,3 +26,13 @@ def test_empty_query_is_rejected(tmp_path) -> None:
         assert "must not be empty" in str(exc)
     else:
         raise AssertionError("empty query should fail")
+
+
+def test_curated_project_knowledge_answers_real_experiment_input_question() -> None:
+    knowledge_dir = Path(__file__).resolve().parents[1] / "knowledge"
+    retriever = LocalKnowledgeRetriever.from_directory(knowledge_dir)
+
+    results = retriever.search("真实实验输入数据要求", top_k=3)
+
+    assert results
+    assert any(result.source == "data\\input_contract.md" for result in results)

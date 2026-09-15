@@ -19,14 +19,36 @@ An executable, traceable agent for remote-sensing spatiotemporal-spectral fusion
 RAG 知识检索能力。现有 H5/TIFF 工具箱可通过 `StructuredTool` 暴露，继续复用参数校验、
 工具白名单、前置依赖和本地错误脱敏；Qwen Responses API 循环保持兼容。
 
+### V2 Agent control plane
+
+网页在执行前使用“两级意图路由”：明确的检查、裁剪、融合和状态请求由本地规则零成本处理；
+其余模糊表述通过一次 Qwen Function Calling 调用输出受 Pydantic 约束的
+`knowledge_query / task_status / inspect_inputs / prepare_crop / run_fusion / clarify` 决策。
+路由结果、来源、置信度和 Token 用量会显示在页面并保存为 `intent_decision.json`。当识别到
+需要数据但输入未配置时，页面会提示需补充的输入，而不会把底层路径异常暴露给用户。
+
+每个 UI 运行目录还维护只含阶段名的 `task_state.json`。输入检查、裁剪、预检和 Agent 工具调用
+均会更新它；后续“查看当前任务状态”会读取该文件，而不保存影像数组、模型权重或 API Key。
+
 ```powershell
 python -m pip install -e ".[dev,langchain]"
 ```
 
 系统提供离线本地 RAG 知识库。知识库位于 `knowledge/`，支持 Markdown/JSON，使用词法
-检索返回相关片段和来源，不依赖在线 Embedding 或向量数据库。CLI Agent 可通过
-`--knowledge-dir knowledge` 开启 `search_knowledge` 工具：
-在已有 `agent-tiff` 命令中追加 `--knowledge-dir knowledge` 即可启用该工具。
+检索返回相关片段和来源，不依赖在线 Embedding 或向量数据库。对于不依赖数据文件的
+项目问答，可使用 `agent-query`；它只暴露知识检索、错误方案、历史实验查询和任务状态工具，
+不要求 TIFF/H5、Checkpoint 或 PyTorch 环境：
+
+```powershell
+python -m rsfusion_agent.cli agent-query `
+  --request "模拟实验的目标 HS 是什么？" `
+  --knowledge-dir knowledge `
+  --history-dir outputs/ui_runs `
+  --output-dir outputs/query_demo `
+  --provider qwen `
+  --llm-model qwen3.7-flash `
+  --pretty
+```
 
 ## V1.0 feature summary
 
@@ -519,6 +541,14 @@ The natural-language Agent exposes the same local operations through a strict al
 `get_runtime_preflight`, `run_yre151_tiff_fusion`, and result retrieval. An input/RGB-only
 request writes and displays original TIFF previews without crop or inference. The control plane
 rejects a model-run tool call unless the request explicitly asks for fusion or inference.
+For knowledge-base questions, history lookup, error diagnosis or task-status lookup before input
+paths are configured, the UI automatically uses the separate read-only `agent-query` route.
+That route cannot inspect files, crop images or run the model.
+
+The sidebar provides an **启用本地 RAG** switch. When enabled, the UI passes the curated
+`knowledge/` and history directories to the Agent and renders the matched source snippets below
+the answer. Keep project knowledge curated under `knowledge/` rather than indexing the whole
+repository, which would introduce generated outputs and unrelated documents.
 Install the optional UI dependency once:
 
 ```powershell
@@ -533,9 +563,10 @@ rsfusion-ui
 ```
 
 The page opens locally in your browser. It never asks for or stores an API key; the
-key remains in the terminal environment. It invokes the existing `rsfusion agent` or
-`rsfusion agent-tiff` workflow, so the runtime preflight, tool allowlist, output isolation
-and result JSON records remain active.
+key remains in the terminal environment. It invokes `rsfusion agent-query` for read-only
+project questions, otherwise the existing `rsfusion agent` or `rsfusion agent-tiff` workflow;
+runtime preflight, tool allowlists, output isolation and result JSON records remain active where
+applicable.
 
 V1.0 includes a local run-history selector: reopen an existing `agent_result.json` from
 the configured output root without calling the LLM again. The UI and CLI also default

@@ -1,3 +1,4 @@
+import subprocess
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -7,10 +8,13 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
+from rsfusion_agent.agent.intent_router import IntentDecision, IntentKind
 from rsfusion_agent.ui.streamlit_app import (
+    UiAgentExecution,
     UiRunConfig,
     UiStageRecord,
     _load_crop_preview_cards,
+    _remember_agent_crop_for_reuse,
     build_agent_command,
     build_crop_command,
     crop_reuse_key,
@@ -21,8 +25,10 @@ from rsfusion_agent.ui.streamlit_app import (
     inspect_raw_tiff_inputs,
     list_run_history,
     load_json_object,
+    missing_input_requirements,
     raw_tiff_check_key,
     resolve_result_artifact,
+    run_agent_from_ui,
     sorted_stage_records,
 )
 
@@ -49,6 +55,82 @@ def _write_h5(path: Path, *, offset: int = 0) -> None:
         handle.create_dataset("test", data=((data + offset) % 5000).astype(np.int16))
 
 
+def test_simulation_tiff_requires_target_hs_reference_before_agent_call(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="帮我进行剪裁",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-1",
+        input_mode="tiff",
+        experiment_mode="simulation",
+        auxiliary_ms_path=tmp_path / "t1_ms.tif",
+        auxiliary_hs_path=tmp_path / "t1_hs.tif",
+        target_ms_path=tmp_path / "t2_ms.tif",
+        target_hs_reference_path=None,
+    )
+
+    assert missing_input_requirements(config) == ["T2 目标时相 HS TIFF（模拟实验真值）"]
+
+
+def test_natural_language_crop_is_reused_in_the_same_ui_session(tmp_path: Path) -> None:
+    output_dir = tmp_path / "outputs" / "run-1"
+    manifest = output_dir / "prepared_crop" / "crop_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+    config = UiRunConfig(
+        request="帮我进行剪裁",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=output_dir,
+        input_mode="tiff",
+    )
+    execution = UiAgentExecution(
+        return_code=0,
+        stdout="",
+        stderr="",
+        result_path=output_dir / "agent_result.json",
+        result={"trace": [{"name": "prepare_tiff_crop", "status": "completed"}]},
+    )
+
+    class FakeStreamlit:
+        def __init__(self) -> None:
+            self.session_state: dict[str, object] = {}
+
+    st = FakeStreamlit()
+    _remember_agent_crop_for_reuse(st, config, ("crop-key",), execution)
+
+    assert st.session_state["ui_crop_reuse_key"] == ("crop-key",)
+    assert st.session_state["ui_crop_manifest_path"] == manifest
+
+
+def test_failed_agent_call_does_not_render_a_stale_previous_result(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    output_dir = tmp_path / "outputs" / "run-1"
+    output_dir.mkdir(parents=True)
+    (output_dir / "agent_result.json").write_text(
+        '{"status": "completed", "request": "旧裁剪请求"}', encoding="utf-8"
+    )
+    config = UiRunConfig(
+        request="继续融合",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "model-python.exe",
+        output_dir=output_dir,
+        auxiliary_h5_path=tmp_path / "aux.h5",
+        target_h5_path=tmp_path / "target.h5",
+    )
+
+    def fail_without_result(*_: object, **__: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="CLI failed")
+
+    monkeypatch.setattr("rsfusion_agent.ui.streamlit_app.subprocess.run", fail_without_result)
+
+    execution = run_agent_from_ui(config)
+
+    assert execution.result is None
+    assert "拒绝复用旧文件" in execution.stderr
+
+
 def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Path) -> None:
     config = UiRunConfig(
         request="融合 patch 0",
@@ -72,6 +154,111 @@ def test_build_agent_command_uses_paths_and_never_accepts_api_keys(tmp_path: Pat
     assert "--skip-preflight" not in command
     assert command[command.index("--runtime-retries") + 1] == "1"
     assert not any("api-key" in item.lower() or "api_key" in item.lower() for item in command)
+
+
+def test_read_only_state_request_skips_model_preflight_and_passes_local_indexes(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="check current task state only",
+        auxiliary_h5_path=tmp_path / "aux.h5",
+        target_h5_path=tmp_path / "target.h5",
+        checkpoint_path=tmp_path / "model.pth",
+        model_python=tmp_path / "missing-model-python.exe",
+        output_dir=tmp_path / "outputs" / "run-1",
+        knowledge_dir=tmp_path / "knowledge",
+        history_dir=tmp_path / "history",
+    )
+
+    command = build_agent_command(config, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-query"]
+    assert "--checkpoint" not in command
+    assert "--model-python" not in command
+    assert command[command.index("--knowledge-dir") + 1] == str(tmp_path / "knowledge")
+    assert command[command.index("--history-dir") + 1] == str(tmp_path / "history")
+
+
+def test_negated_chinese_execution_request_uses_query_route(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="请查看当前任务状态，不要执行裁剪或融合。",
+        checkpoint_path=tmp_path / "unused.pth",
+        model_python=tmp_path / "unused-python.exe",
+        output_dir=tmp_path / "outputs" / "query",
+        input_mode="tiff",
+    )
+
+    command = build_agent_command(config, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-query"]
+    assert "--aux-ms" not in command
+
+
+def test_data_free_project_question_uses_query_route(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="模拟实验的目标 HS 是什么？",
+        checkpoint_path=tmp_path / "unused.pth",
+        model_python=tmp_path / "unused-python.exe",
+        output_dir=tmp_path / "outputs" / "query",
+        input_mode="tiff",
+    )
+
+    command = build_agent_command(config, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-query"]
+    assert "--aux-ms" not in command
+
+
+def test_data_free_chinese_workflow_question_uses_query_route(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="真实实验的处理流程是怎么样的",
+        checkpoint_path=tmp_path / "unused.pth",
+        model_python=tmp_path / "unused-python.exe",
+        output_dir=tmp_path / "outputs" / "query",
+        input_mode="tiff",
+    )
+
+    command = build_agent_command(config, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-query"]
+    assert "--aux-ms" not in command
+
+
+def test_data_free_input_requirement_question_uses_query_route(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="真实实验的输入数据要求是怎样的",
+        checkpoint_path=tmp_path / "unused.pth",
+        model_python=tmp_path / "unused-python.exe",
+        output_dir=tmp_path / "outputs" / "query",
+        input_mode="tiff",
+    )
+
+    command = build_agent_command(config, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-query"]
+    assert "--aux-ms" not in command
+
+
+def test_structured_intent_overrides_keyword_route_and_honors_rag_toggle(tmp_path: Path) -> None:
+    config = UiRunConfig(
+        request="换一种说法的实验规则问题",
+        checkpoint_path=tmp_path / "unused.pth",
+        model_python=tmp_path / "unused-python.exe",
+        output_dir=tmp_path / "outputs" / "query",
+        input_mode="tiff",
+        knowledge_dir=tmp_path / "knowledge",
+        history_dir=tmp_path / "history",
+        enable_rag=False,
+    )
+    intent = IntentDecision(
+        intent=IntentKind.KNOWLEDGE_QUERY,
+        confidence=0.9,
+        reason="The request asks about a project rule.",
+    )
+
+    command = build_agent_command(config, intent=intent, python_executable="ui-python.exe")
+
+    assert command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "agent-query"]
+    assert "--knowledge-dir" not in command
+    assert "--history-dir" not in command
 
 
 def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_path: Path) -> None:

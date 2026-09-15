@@ -29,11 +29,19 @@ the crop manifest, and then run fusion. For any inference request, call the rele
 before the run tool. Never run fusion unless the user explicitly asks to fuse, infer, test, or
 generate a fusion result. The runtime preflight is already computed locally; call
 get_runtime_preflight only when the user explicitly asks about the runtime environment.
+If a crop-only input inspection fails, do not call get_runtime_preflight; explain the missing
+input or configuration and stop.
+For a request to inspect, view, or validate an existing crop manifest, call
+inspect_yre151_tiff_crop only. Do not fall back to a raw-TIFF inspection, crop, or fusion; if no
+manifest is available, explain that this run has not been bound to one.
 Do not ask the user to reply with confirmation: every request is a self-contained execution.
 For questions about project procedures, data contracts, model behavior or prior guidance,
 call search_knowledge first and cite the returned source names in your answer. Do not claim
 knowledge-base support when the tool returned no matching results. If a tool returns an error,
-explain it or choose a safe recovery tool. Answer in the user's language.
+explain it or choose a safe recovery tool. For a runtime or configuration failure, use
+search_error_solution when a knowledge directory is configured. For questions about prior
+runs or comparable metrics, use search_similar_experiments when a history directory is configured.
+Answer in the user's language.
 """
 
 
@@ -135,6 +143,9 @@ class LLMFusionAgent:
                             "Inference was not authorized by this request. Ask explicitly to run fusion or inference."
                         )
                     output = self.toolbox.execute(call.name, call.arguments)
+                    record_success = getattr(self.toolbox, "record_tool_success", None)
+                    if callable(record_success):
+                        record_success(call.name)
                     status = "completed"
                 except Exception as exc:
                     output = self.toolbox.sanitize_error(exc)

@@ -10,12 +10,15 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from rsfusion_agent.agent.state import FusionRunRequest, FusionRunResult
+from rsfusion_agent.agent.task_state import load_task_state, save_task_state
 from rsfusion_agent.agent.tiff_workflow import (
     TiffFusionRequest,
     TiffFusionResult,
     YRE151TiffPatchAgent,
 )
 from rsfusion_agent.agent.workflow import YRE151PatchAgent
+from rsfusion_agent.rag.error_retriever import search_error_solutions
+from rsfusion_agent.rag.experiment_memory import search_experiments
 from rsfusion_agent.rag.retriever import LocalKnowledgeRetriever
 from rsfusion_agent.tools.error_diagnosis import diagnose_error
 from rsfusion_agent.tools.h5_patch import H5PairInspection, inspect_h5_pair
@@ -37,6 +40,17 @@ class LLMToolContext(BaseModel):
     timeout_seconds: int = Field(default=600, gt=0)
     runtime_retries: int = Field(default=1, ge=0, le=2)
     knowledge_dir: Path | None = None
+    history_dir: Path | None = None
+    task_state_path: Path | None = None
+
+
+class QueryLLMToolContext(BaseModel):
+    """Context for read-only project questions that do not require experiment inputs."""
+
+    output_dir: Path
+    knowledge_dir: Path | None = None
+    history_dir: Path | None = None
+    task_state_path: Path | None = None
 
 
 class PatchIndexArguments(BaseModel):
@@ -46,6 +60,131 @@ class PatchIndexArguments(BaseModel):
 
 
 WorkflowFactory = Callable[[], YRE151PatchAgent]
+
+
+class QueryToolbox:
+    """Minimal allowlist for knowledge, error and experiment-history questions.
+
+    It intentionally has no raster paths, checkpoint or model runtime. This makes a
+    project question executable before a user has selected a dataset.
+    """
+
+    latest_result = None
+    runtime_preflight = None
+
+    def __init__(self, context: QueryLLMToolContext) -> None:
+        self.context = context
+        self.task_state = load_task_state(context.task_state_path)
+
+    def record_tool_success(self, name: str) -> None:
+        self.task_state.record(name)
+        save_task_state(self.context.task_state_path, self.task_state)
+
+    @staticmethod
+    def definitions() -> list[dict[str, Any]]:
+        empty_schema = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+        search_schema = {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+        error_schema = {
+            "type": "object",
+            "properties": {
+                "error": {"type": "string", "minLength": 1},
+                "top_k": {"type": "integer", "minimum": 1, "maximum": 20},
+            },
+            "required": ["error"],
+            "additionalProperties": False,
+        }
+        return [
+            {
+                "type": "function",
+                "name": "get_task_state",
+                "description": "Read the state of this read-only project-question task.",
+                "parameters": empty_schema,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "search_knowledge",
+                "description": "Search the local project knowledge base and return sources.",
+                "parameters": search_schema,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "search_error_solution",
+                "description": "Search local documented solutions for an error.",
+                "parameters": error_schema,
+                "strict": True,
+            },
+            {
+                "type": "function",
+                "name": "search_similar_experiments",
+                "description": "Search persisted agent results for similar experiments.",
+                "parameters": search_schema,
+                "strict": True,
+            },
+        ]
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == "get_task_state":
+            if arguments:
+                raise ValueError("get_task_state does not accept arguments")
+            return {"ok": True, **self.task_state.summary()}
+        if name == "search_knowledge":
+            if self.context.knowledge_dir is None:
+                raise ValueError("No local knowledge directory is configured")
+            query = arguments.get("query")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("search_knowledge requires a non-empty query")
+            results = LocalKnowledgeRetriever.from_directory(self.context.knowledge_dir).search(
+                query, top_k=int(arguments.get("top_k", 4))
+            )
+            return {"ok": True, "query": query, "results": [item.__dict__ for item in results]}
+        if name == "search_error_solution":
+            if self.context.knowledge_dir is None:
+                raise ValueError("No local knowledge directory is configured")
+            error = arguments.get("error")
+            if not isinstance(error, str) or not error.strip():
+                raise ValueError("search_error_solution requires a non-empty error")
+            results = search_error_solutions(
+                self.context.knowledge_dir, error, top_k=int(arguments.get("top_k", 4))
+            )
+            return {"ok": True, "error": error, "results": [item.__dict__ for item in results]}
+        if name == "search_similar_experiments":
+            if self.context.history_dir is None:
+                raise ValueError("No local experiment history directory is configured")
+            query = arguments.get("query")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("search_similar_experiments requires a non-empty query")
+            results = search_experiments(
+                self.context.history_dir, query, top_k=int(arguments.get("top_k", 5))
+            )
+            return {"ok": True, "query": query, "results": [item.__dict__ for item in results]}
+        raise ValueError(f"Tool is not allowlisted: {name}")
+
+    def sanitize_error(self, error: Exception) -> dict[str, Any]:
+        message = str(error)
+        for path in (self.context.knowledge_dir, self.context.history_dir, self.context.output_dir):
+            if path is not None:
+                message = message.replace(str(path), "<local_path>")
+        return {
+            "ok": False,
+            "error_type": type(error).__name__,
+            "error": message,
+            "diagnosis": diagnose_error(error).model_dump(mode="json"),
+        }
 
 
 class AgentToolbox:
@@ -61,6 +200,11 @@ class AgentToolbox:
         self.inspected_patch: int | None = None
         self.latest_result: FusionRunResult | None = None
         self.runtime_preflight: Any | None = None
+        self.task_state = load_task_state(context.task_state_path)
+
+    def record_tool_success(self, name: str) -> None:
+        self.task_state.record(name)
+        save_task_state(self.context.task_state_path, self.task_state)
 
     @staticmethod
     def definitions() -> list[dict[str, Any]]:
@@ -132,6 +276,19 @@ class AgentToolbox:
                 },
                 "strict": True,
             },
+            {"type": "function", "name": "get_task_state", "description": "Read current task state.", "parameters": empty_schema, "strict": True},
+            {
+                "type": "function", "name": "search_error_solution",
+                "description": "Search local documented solutions for an error.",
+                "parameters": {"type": "object", "properties": {"error": {"type": "string", "minLength": 1}, "top_k": {"type": "integer", "minimum": 1, "maximum": 20}}, "required": ["error"], "additionalProperties": False},
+                "strict": True,
+            },
+            {
+                "type": "function", "name": "search_similar_experiments",
+                "description": "Search persisted agent results for similar experiments.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1}, "top_k": {"type": "integer", "minimum": 1, "maximum": 20}}, "required": ["query"], "additionalProperties": False},
+                "strict": True,
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +296,10 @@ class AgentToolbox:
             if arguments:
                 raise ValueError("get_runtime_preflight does not accept arguments")
             return self._preflight_summary()
+        if name == "get_task_state":
+            if arguments:
+                raise ValueError("get_task_state does not accept arguments")
+            return {"ok": True, **self.task_state.summary()}
         if name == "inspect_yre151_h5":
             parsed = PatchIndexArguments.model_validate(arguments)
             self._require_configured_patch(parsed.patch_index)
@@ -194,6 +355,22 @@ class AgentToolbox:
                 "query": query,
                 "results": [result.__dict__ for result in results],
             }
+        if name == "search_error_solution":
+            if self.context.knowledge_dir is None:
+                raise ValueError("No local knowledge directory is configured")
+            error = arguments.get("error")
+            if not isinstance(error, str) or not error.strip():
+                raise ValueError("search_error_solution requires a non-empty error")
+            results = search_error_solutions(self.context.knowledge_dir, error, top_k=int(arguments.get("top_k", 4)))
+            return {"ok": True, "error": error, "results": [item.__dict__ for item in results]}
+        if name == "search_similar_experiments":
+            if self.context.history_dir is None:
+                raise ValueError("No local experiment history directory is configured")
+            query = arguments.get("query")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("search_similar_experiments requires a non-empty query")
+            results = search_experiments(self.context.history_dir, query, top_k=int(arguments.get("top_k", 5)))
+            return {"ok": True, "query": query, "results": [item.__dict__ for item in results]}
 
         raise ValueError(f"Tool is not allowlisted: {name}")
 
@@ -309,6 +486,8 @@ class TiffLLMToolContext(BaseModel):
     timeout_seconds: int = Field(default=600, gt=0)
     runtime_retries: int = Field(default=1, ge=0, le=2)
     knowledge_dir: Path | None = None
+    history_dir: Path | None = None
+    task_state_path: Path | None = None
 
 
 TiffWorkflowFactory = Callable[[], YRE151TiffPatchAgent]
@@ -329,6 +508,11 @@ class TiffAgentToolbox:
         self.raw_inputs_inspected = False
         self.active_crop_manifest_path = context.crop_manifest_path
         self.runtime_preflight: Any | None = None
+        self.task_state = load_task_state(context.task_state_path)
+
+    def record_tool_success(self, name: str) -> None:
+        self.task_state.record(name)
+        save_task_state(self.context.task_state_path, self.task_state)
 
     @staticmethod
     def definitions() -> list[dict[str, Any]]:
@@ -395,6 +579,18 @@ class TiffAgentToolbox:
                 "strict": True,
             },
             {
+                "type": "function", "name": "search_error_solution",
+                "description": "Search local documented solutions for an error.",
+                "parameters": {"type": "object", "properties": {"error": {"type": "string", "minLength": 1}, "top_k": {"type": "integer", "minimum": 1, "maximum": 20}}, "required": ["error"], "additionalProperties": False},
+                "strict": True,
+            },
+            {
+                "type": "function", "name": "search_similar_experiments",
+                "description": "Search persisted agent results for similar experiments.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1}, "top_k": {"type": "integer", "minimum": 1, "maximum": 20}}, "required": ["query"], "additionalProperties": False},
+                "strict": True,
+            },
+            {
                 "type": "function",
                 "name": "search_knowledge",
                 "description": "Search the local project knowledge base and return sources.",
@@ -409,13 +605,18 @@ class TiffAgentToolbox:
                 },
                 "strict": True,
             },
+            {"type": "function", "name": "get_task_state", "description": "Read current task state.", "parameters": empty_schema, "strict": True},
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if name != "search_knowledge" and arguments:
+        if name not in {"search_knowledge", "search_error_solution", "search_similar_experiments"} and arguments:
             raise ValueError(f"{name} does not accept arguments")
         if name == "get_runtime_preflight":
             return self._preflight_summary()
+        if name == "get_task_state":
+            if arguments:
+                raise ValueError("get_task_state does not accept arguments")
+            return {"ok": True, **self.task_state.summary()}
         if name == "inspect_raw_tiff_inputs":
             return self._inspect_raw_tiff_inputs()
         if name == "prepare_tiff_crop":
@@ -488,6 +689,22 @@ class TiffAgentToolbox:
                 "query": query,
                 "results": [result.__dict__ for result in results],
             }
+        if name == "search_error_solution":
+            if self.context.knowledge_dir is None:
+                raise ValueError("No local knowledge directory is configured")
+            error = arguments.get("error")
+            if not isinstance(error, str) or not error.strip():
+                raise ValueError("search_error_solution requires a non-empty error")
+            results = search_error_solutions(self.context.knowledge_dir, error, top_k=int(arguments.get("top_k", 4)))
+            return {"ok": True, "error": error, "results": [item.__dict__ for item in results]}
+        if name == "search_similar_experiments":
+            if self.context.history_dir is None:
+                raise ValueError("No local experiment history directory is configured")
+            query = arguments.get("query")
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("search_similar_experiments requires a non-empty query")
+            results = search_experiments(self.context.history_dir, query, top_k=int(arguments.get("top_k", 5)))
+            return {"ok": True, "query": query, "results": [item.__dict__ for item in results]}
         raise ValueError(f"Tool is not allowlisted: {name}")
 
     def _preflight_summary(self) -> dict[str, Any]:

@@ -16,6 +16,8 @@ from rsfusion_agent.agent.llm_client import (
 from rsfusion_agent.agent.llm_tools import (
     AgentToolbox,
     LLMToolContext,
+    QueryLLMToolContext,
+    QueryToolbox,
     TiffAgentToolbox,
     TiffLLMToolContext,
 )
@@ -212,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--knowledge-dir", help="Local Markdown/JSON knowledge base for search_knowledge."
     )
+    agent_parser.add_argument("--history-dir", help="Root directory containing agent_result.json history.")
+    agent_parser.add_argument("--task-state-path", help="Optional persisted task_state.json path.")
     agent_parser.add_argument("--patch-index", type=int, default=0)
     agent_parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     agent_parser.add_argument(
@@ -257,6 +261,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_parser.add_argument("--pretty", action="store_true")
 
+    query_parser = subparsers.add_parser(
+        "agent-query",
+        help="Answer a read-only project question without requiring raster inputs or a model runtime.",
+    )
+    query_parser.add_argument("--request", required=True, help="Natural-language project question.")
+    query_parser.add_argument("--output-dir", required=True)
+    query_parser.add_argument(
+        "--knowledge-dir", help="Local Markdown/JSON knowledge base for search_knowledge."
+    )
+    query_parser.add_argument("--history-dir", help="Root directory containing agent_result.json history.")
+    query_parser.add_argument("--task-state-path", help="Optional persisted task_state.json path.")
+    query_parser.add_argument(
+        "--provider",
+        choices=("openai", "qwen", "deepseek", "custom"),
+        default=os.environ.get("RSFUSION_LLM_PROVIDER", "openai"),
+    )
+    query_parser.add_argument("--llm-model", default=None)
+    query_parser.add_argument("--base-url", default=None)
+    query_parser.add_argument("--max-turns", type=int, default=4)
+    query_parser.add_argument("--pretty", action="store_true")
+
     tiff_agent_parser = subparsers.add_parser(
         "agent-tiff",
         help="Use natural language to run one crop-manifest TIFF fusion through allowlisted tools.",
@@ -282,6 +307,8 @@ def build_parser() -> argparse.ArgumentParser:
     tiff_agent_parser.add_argument(
         "--knowledge-dir", help="Local Markdown/JSON knowledge base for search_knowledge."
     )
+    tiff_agent_parser.add_argument("--history-dir", help="Root directory containing agent_result.json history.")
+    tiff_agent_parser.add_argument("--task-state-path", help="Optional persisted task_state.json path.")
     tiff_agent_parser.add_argument("--experiment-mode", choices=(REAL_EXPERIMENT, SIMULATION_EXPERIMENT))
     tiff_agent_parser.add_argument("--patch-size", type=int)
     tiff_agent_parser.add_argument("--patch-index", type=int)
@@ -449,6 +476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_python=Path(args.model_python),
                 output_dir=Path(args.output_dir),
                 knowledge_dir=Path(args.knowledge_dir) if args.knowledge_dir else None,
+                history_dir=Path(args.history_dir) if args.history_dir else None,
+                task_state_path=Path(args.task_state_path) if args.task_state_path else None,
                 patch_index=args.patch_index,
                 device=args.device,
                 timeout_seconds=args.timeout,
@@ -486,6 +515,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit_json(payload, indent=indent)
         return 0
 
+    if args.command == "agent-query":
+        try:
+            context = QueryLLMToolContext(
+                output_dir=Path(args.output_dir),
+                knowledge_dir=Path(args.knowledge_dir) if args.knowledge_dir else None,
+                history_dir=Path(args.history_dir) if args.history_dir else None,
+                task_state_path=Path(args.task_state_path) if args.task_state_path else None,
+            )
+            settings = resolve_provider_settings(
+                provider=args.provider,
+                model=args.llm_model,
+                base_url=args.base_url,
+            )
+            client = CompatibleResponsesClient(
+                provider=settings.provider,
+                model=settings.model,
+                base_url=settings.base_url,
+            )
+            result = LLMFusionAgent(
+                client=client,
+                toolbox=QueryToolbox(context),
+                max_turns=args.max_turns,
+            ).run(args.request)
+        except Exception as exc:
+            parser.error(str(exc))
+        indent = 2 if args.pretty else None
+        payload = result.model_dump(mode="json")
+        _write_json_file(Path(args.output_dir) / "agent_result.json", payload, indent=indent)
+        _emit_json(payload, indent=indent)
+        return 0
+
     if args.command == "agent-tiff":
         try:
             context = TiffLLMToolContext(
@@ -507,6 +567,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_python=Path(args.model_python),
                 output_dir=Path(args.output_dir),
                 knowledge_dir=Path(args.knowledge_dir) if args.knowledge_dir else None,
+                history_dir=Path(args.history_dir) if args.history_dir else None,
+                task_state_path=Path(args.task_state_path) if args.task_state_path else None,
                 experiment_mode=args.experiment_mode,
                 patch_size=args.patch_size,
                 patch_index=args.patch_index,

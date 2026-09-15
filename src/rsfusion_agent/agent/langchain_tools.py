@@ -44,8 +44,14 @@ def _schema_for(name: str) -> Any:
 
     if name in {"inspect_yre151_h5", "run_yre151_fusion"}:
         return PatchArguments
-    if name == "search_knowledge":
+    if name == "search_knowledge" or name == "search_similar_experiments":
         return KnowledgeArguments
+    if name == "search_error_solution":
+        class ErrorArguments(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+            error: str = Field(min_length=1)
+            top_k: int = Field(default=4, ge=1, le=20)
+        return ErrorArguments
     return EmptyArguments
 
 

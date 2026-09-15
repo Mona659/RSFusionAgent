@@ -13,6 +13,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
+from rsfusion_agent.agent.intent_router import (
+    IntentDecision,
+    IntentKind,
+    IntentRouter,
+    IntentRoutingResult,
+    rule_based_intent,
+)
+from rsfusion_agent.agent.llm_client import CompatibleResponsesClient, resolve_provider_settings
+from rsfusion_agent.agent.task_state import load_task_state, save_task_state
+
 T = TypeVar("T")
 WaitReporter = Callable[[float, float], None]
 
@@ -25,6 +35,9 @@ class UiRunConfig:
     checkpoint_path: Path
     model_python: Path
     output_dir: Path
+    knowledge_dir: Path | None = None
+    history_dir: Path | None = None
+    enable_rag: bool = True
     input_mode: str = "h5"
     auxiliary_h5_path: Path | None = None
     target_h5_path: Path | None = None
@@ -63,6 +76,7 @@ class UiAgentExecution:
     stderr: str
     result_path: Path
     result: dict[str, Any] | None
+    intent_routing: IntentRoutingResult | None = None
 
 
 @dataclass(frozen=True)
@@ -231,11 +245,93 @@ def run_with_elapsed(
         return future.result()
 
 
-def build_agent_command(config: UiRunConfig, *, python_executable: str | None = None) -> list[str]:
+def is_read_only_project_request(request: str) -> bool:
+    """Return whether a request can run without image paths or a model environment."""
+
+    request_text = request.lower()
+    informational_keywords = (
+        "任务状态", "当前状态", "知识库", "历史实验", "历史记录", "类似实验", "错误解决",
+        "状态工具", "只查看", "仅查看", "不要执行", "报错", "失败原因", "怎么解决",
+        "是什么", "为什么", "怎么做", "怎么样", "如何", "是否", "吗", "？", "?",
+        "处理流程", "流程", "原理", "区别", "含义", "说明", "介绍",
+        "what is", "history", "error solution", "knowledge base", "current task state",
+    )
+    # A request such as “不要执行裁剪或融合” contains the literal phrase
+    # “执行裁剪”, but its meaning is explicitly read-only. Remove common
+    # negation prefixes before looking for affirmative execution intent.
+    execution_text = request_text
+    for prefix in ("不要执行", "不执行", "无需执行", "不用执行", "do not run", "don't run"):
+        execution_text = execution_text.replace(prefix, "")
+    return (
+        any(keyword in request_text for keyword in informational_keywords)
+        and not requests_data_operation(execution_text, already_normalized=True)
+    )
+
+
+def requests_data_operation(request: str, *, already_normalized: bool = False) -> bool:
+    """Return whether text affirmatively asks to inspect, crop, or run local data."""
+
+    execution_text = request.lower()
+    if not already_normalized:
+        for prefix in ("不要执行", "不执行", "无需执行", "不用执行", "do not run", "don't run"):
+            execution_text = execution_text.replace(prefix, "")
+    return any(
+        keyword in execution_text
+        for keyword in (
+            "执行融合", "开始融合", "运行融合", "执行推理", "开始推理", "执行裁剪",
+            "重新裁剪", "检查输入", "检查原始", "run fusion", "run crop", "infer",
+        )
+    )
+
+
+def has_configured_input_paths(config: UiRunConfig) -> bool:
+    """Whether the selected mode has every path needed for a data workflow."""
+
+    return not missing_input_requirements(config)
+
+
+def missing_input_requirements(config: UiRunConfig) -> list[str]:
+    """Return user-facing input requirements before an Agent spends any tokens."""
+
+    if config.input_mode == "h5":
+        missing = []
+        if config.auxiliary_h5_path is None:
+            missing.append("辅助时相 H5")
+        if config.target_h5_path is None:
+            missing.append("目标时相 H5")
+        return missing
+    if config.input_mode == "tiff":
+        missing = []
+        if config.auxiliary_ms_path is None:
+            missing.append("T1 辅助时相 MS TIFF")
+        if config.auxiliary_hs_path is None:
+            missing.append("T1 辅助时相 HS TIFF")
+        if config.target_ms_path is None:
+            missing.append("T2 目标时相 MS TIFF")
+        if config.experiment_mode == "simulation" and config.target_hs_reference_path is None:
+            missing.append("T2 目标时相 HS TIFF（模拟实验真值）")
+        return missing
+    return ["有效输入模式"]
+
+
+def build_agent_command(
+    config: UiRunConfig,
+    *,
+    intent: IntentDecision | None = None,
+    python_executable: str | None = None,
+) -> list[str]:
     """Build a shell-free CLI command without exposing API keys in arguments."""
 
     command = [python_executable or sys.executable, "-m", "rsfusion_agent.cli"]
-    if config.input_mode == "h5":
+    read_only_query = (
+        intent.intent in {IntentKind.KNOWLEDGE_QUERY, IntentKind.TASK_STATUS}
+        if intent is not None
+        else is_read_only_project_request(config.request)
+        or (not has_configured_input_paths(config) and not requests_data_operation(config.request))
+    )
+    if read_only_query:
+        command.extend(("agent-query", "--request", config.request))
+    elif config.input_mode == "h5":
         if config.auxiliary_h5_path is None or config.target_h5_path is None:
             raise ValueError("H5 mode requires auxiliary and target H5 paths")
         command.extend(
@@ -297,26 +393,40 @@ def build_agent_command(config: UiRunConfig, *, python_executable: str | None = 
     else:
         raise ValueError(f"Unsupported UI input mode: {config.input_mode}")
     command.extend(
-        [
-            "--checkpoint",
-            str(config.checkpoint_path),
-            "--model-python",
-            str(config.model_python),
+        (
             "--output-dir",
             str(config.output_dir),
-            "--device",
-            config.device,
+            "--task-state-path",
+            str(config.output_dir / "task_state.json"),
             "--provider",
             config.provider,
-            "--timeout",
-            str(config.timeout_seconds),
-            "--preflight-timeout",
-            str(config.preflight_timeout_seconds),
-            "--runtime-retries",
-            str(config.runtime_retries),
-            "--pretty",
-        ]
+        )
     )
+    if not read_only_query:
+        command.extend(
+            [
+                "--checkpoint",
+                str(config.checkpoint_path),
+                "--model-python",
+                str(config.model_python),
+                "--device",
+                config.device,
+                "--timeout",
+                str(config.timeout_seconds),
+                "--preflight-timeout",
+                str(config.preflight_timeout_seconds),
+                "--runtime-retries",
+                str(config.runtime_retries),
+            ]
+        )
+        # Keep informational requests inside a configured data workflow cheap.
+        if not any(keyword in config.request.lower() for keyword in ("融合", "推理", "模型", "checkpoint", "fusion", "测试结果", "指标")):
+            command.append("--skip-preflight")
+    command.append("--pretty")
+    if config.enable_rag and config.knowledge_dir is not None:
+        command.extend(("--knowledge-dir", str(config.knowledge_dir)))
+    if config.enable_rag and config.history_dir is not None:
+        command.extend(("--history-dir", str(config.history_dir)))
     if config.llm_model:
         command.extend(("--llm-model", config.llm_model))
     if config.base_url:
@@ -555,11 +665,70 @@ def collect_agent_artifacts(result: dict[str, Any]) -> dict[str, str]:
     return artifacts
 
 
-def run_agent_from_ui(config: UiRunConfig) -> UiAgentExecution:
+def classify_ui_intent(config: UiRunConfig) -> IntentRoutingResult:
+    """Use a free deterministic route first, then one constrained LLM decision."""
+
+    deterministic = rule_based_intent(config.request)
+    if deterministic is not None:
+        return IntentRoutingResult(decision=deterministic, source="rule")
+    try:
+        settings = resolve_provider_settings(
+            provider=config.provider,
+            model=config.llm_model,
+            base_url=config.base_url,
+        )
+        client = CompatibleResponsesClient(
+            provider=settings.provider,
+            model=settings.model,
+            base_url=settings.base_url,
+        )
+    except Exception as exc:
+        return IntentRoutingResult(
+            decision=IntentDecision(
+                intent=IntentKind.KNOWLEDGE_QUERY,
+                confidence=0.0,
+                reason="意图识别环境不可用，已安全降级为只读知识问答。",
+            ),
+            source="fallback",
+            fallback_error=f"{type(exc).__name__}: {exc}",
+        )
+    return IntentRouter(client).route(config.request)
+
+
+def write_intent_decision(config: UiRunConfig, routing: IntentRoutingResult) -> Path:
+    """Persist routing evidence next to the agent result for reproducibility."""
+
+    path = config.output_dir / "intent_decision.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(routing.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def record_ui_task_success(config: UiRunConfig, tool_name: str) -> Path:
+    """Persist deterministic UI stages so later Agent queries can resume from them."""
+
+    path = config.output_dir / "task_state.json"
+    state = load_task_state(path)
+    state.record(tool_name)
+    save_task_state(path, state)
+    return path
+
+
+def run_agent_from_ui(
+    config: UiRunConfig, *, intent_routing: IntentRoutingResult | None = None
+) -> UiAgentExecution:
     """Execute the CLI so UI and terminal runs share exactly one workflow."""
 
+    result_path = config.output_dir / "agent_result.json"
+    previous_mtime_ns = result_path.stat().st_mtime_ns if result_path.is_file() else None
     completed = subprocess.run(
-        build_agent_command(config),
+        build_agent_command(
+            config,
+            intent=intent_routing.decision if intent_routing is not None else None,
+        ),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -567,13 +736,24 @@ def run_agent_from_ui(config: UiRunConfig) -> UiAgentExecution:
         timeout=config.timeout_seconds + config.preflight_timeout_seconds + 30,
         env=os.environ.copy(),
     )
-    result_path = config.output_dir / "agent_result.json"
+    fresh_result = False
+    if result_path.is_file():
+        fresh_result = previous_mtime_ns != result_path.stat().st_mtime_ns
+    result = load_json_object(result_path) if fresh_result else None
+    stderr = completed.stderr
+    if not fresh_result:
+        stale_message = (
+            "本次 Agent 调用未生成新的 agent_result.json；为避免展示上一轮旧结果，"
+            "界面已拒绝复用旧文件。请查看以下 CLI 输出定位原因。"
+        )
+        stderr = f"{stderr}\n{stale_message}".strip()
     return UiAgentExecution(
         return_code=completed.returncode,
         stdout=completed.stdout,
-        stderr=completed.stderr,
+        stderr=stderr,
         result_path=result_path,
-        result=load_json_object(result_path),
+        result=result,
+        intent_routing=intent_routing,
     )
 
 
@@ -610,6 +790,7 @@ def _build_config(st: Any) -> UiRunConfig:
 
     if "ui_run_id" not in st.session_state:
         st.session_state["ui_run_id"] = datetime.now().strftime("%Y%m%d_%H%M%S")
+    repo_root = Path(__file__).resolve().parents[3]
     with st.sidebar:
         st.header("运行配置")
         auxiliary = target = ""
@@ -800,7 +981,14 @@ def _build_config(st: Any) -> UiRunConfig:
             model_python = st.text_input(
                 "模型 Conda Python",
                 value=_env_default("RSFUSION_MODEL_PYTHON", sys.executable),
+                help="必须填写安装了 PyTorch/CUDA 和原始模型依赖的 Conda Python；项目 .venv 仅用于 UI/Agent。",
             )
+            project_venv_python = (repo_root / ".venv" / "Scripts" / "python.exe").resolve()
+            if Path(model_python).expanduser().resolve() == project_venv_python:
+                st.warning(
+                    "当前填写的是项目 .venv，它默认不包含 PyTorch，无法运行模型。"
+                    "请改为训练/推理 Conda 环境的 python.exe。"
+                )
             provider = st.selectbox("LLM Provider", ("qwen", "openai", "deepseek", "custom"))
             llm_model = st.text_input("模型 ID", value=_env_default("RSFUSION_LLM_MODEL"))
             base_url = st.text_input("兼容 API Base URL", value=_env_default("RSFUSION_LLM_BASE_URL"))
@@ -913,6 +1101,18 @@ def _build_config(st: Any) -> UiRunConfig:
             output_root = st.text_input("输出根目录", value="outputs/ui_runs")
             st.caption(f"当前运行目录：ui_run_{st.session_state['ui_run_id']}")
 
+        # Resolve repository-local resources automatically; users can still override
+        # these through environment variables when launching the UI elsewhere.
+        knowledge_default = _env_default("RSFUSION_KNOWLEDGE_DIR", str(repo_root / "knowledge"))
+        history_default = _env_default("RSFUSION_HISTORY_DIR", output_root)
+        enable_rag = st.checkbox(
+            "启用本地 RAG",
+            value=True,
+            help="允许 Agent 检索知识库、错误方案和历史实验；关闭后不传递这些目录。",
+        )
+        knowledge_dir_text = st.text_input("本地知识库目录", value=knowledge_default)
+        history_dir_text = st.text_input("历史实验目录", value=history_default)
+
     default_request = (
         "请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。"
         if not is_tiff
@@ -937,6 +1137,9 @@ def _build_config(st: Any) -> UiRunConfig:
         checkpoint_path=Path(checkpoint),
         model_python=Path(model_python),
         output_dir=Path(output_root) / f"ui_run_{st.session_state['ui_run_id']}",
+        knowledge_dir=Path(knowledge_dir_text) if knowledge_dir_text else None,
+        history_dir=Path(history_dir_text) if history_dir_text else None,
+        enable_rag=enable_rag,
         input_mode="tiff" if is_tiff else "h5",
         auxiliary_h5_path=Path(auxiliary) if auxiliary else None,
         target_h5_path=Path(target) if target else None,
@@ -1125,6 +1328,27 @@ def _load_selected_tiff_patch_cards(
     return prepared, cards
 
 
+def _render_markdown_table(
+    st: Any, rows: list[dict[str, Any]], columns: list[tuple[str, str]]
+) -> None:
+    """Render compact tables without Streamlit's optional PyArrow dependency."""
+
+    if not rows:
+        st.caption("暂无记录。")
+        return
+
+    def cell(value: Any) -> str:
+        return str(value if value is not None else "-").replace("|", "\\|").replace("\n", "<br>")
+
+    header = "| " + " | ".join(title for title, _ in columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    body = [
+        "| " + " | ".join(cell(row.get(key)) for _, key in columns) + " |"
+        for row in rows
+    ]
+    st.markdown("\n".join([header, separator, *body]))
+
+
 def _render_crop_result(st: Any, execution: UiCropExecution | None, config: UiRunConfig) -> None:
     """Show only the deterministic preprocessing result, separate from fusion output."""
 
@@ -1143,14 +1367,20 @@ def _render_crop_result(st: Any, execution: UiCropExecution | None, config: UiRu
         "T2 MS": execution.result.get("target_ms_window"),
         "T2 HS 参考": execution.result.get("target_hs_reference_window"),
     }
-    st.dataframe(
+    _render_markdown_table(
+        st,
         [
             {"数据": name, **window}
             for name, window in windows.items()
             if isinstance(window, dict)
         ],
-        use_container_width=True,
-        hide_index=True,
+        [
+            ("数据", "数据"),
+            ("row_offset", "row_offset"),
+            ("col_offset", "col_offset"),
+            ("height", "height"),
+            ("width", "width"),
+        ],
     )
     st.caption(f"清单：{execution.manifest_path}")
     try:
@@ -1174,6 +1404,85 @@ def _render_crop_result(st: Any, execution: UiCropExecution | None, config: UiRu
             column.image(preview, caption=band_label, use_container_width=True)
 
 
+def _render_agent_conversation(st: Any, result: dict[str, Any]) -> None:
+    """Show the user-visible answer before low-level traces and JSON artifacts."""
+
+    request = str(result.get("request") or "")
+    answer = str(result.get("answer") or "Agent 未返回可展示的文本回答。")
+    st.subheader("Agent 对话")
+    chat_message = getattr(st, "chat_message", None)
+    if callable(chat_message):
+        with chat_message("user"):
+            st.markdown(request)
+        with chat_message("assistant"):
+            st.markdown(answer)
+        return
+
+    # Compatibility fallback for older Streamlit releases.
+    st.markdown("**你**")
+    st.info(request)
+    st.markdown("**RSFusionAgent**")
+    st.success(answer)
+
+
+def _render_intent_routing(st: Any, routing: IntentRoutingResult) -> None:
+    """Make the route chosen before tool execution visible to the user."""
+
+    labels = {
+        "knowledge_query": "知识问答 / RAG 检索",
+        "task_status": "任务状态查询",
+        "inspect_inputs": "输入数据检查",
+        "inspect_crop": "裁剪清单检查",
+        "prepare_crop": "数据裁剪",
+        "run_fusion": "模型融合推理",
+        "clarify": "需要补充说明",
+    }
+    decision = routing.decision
+    intent_value = getattr(decision.intent, "value", str(decision.intent))
+    st.subheader("意图识别")
+    st.info(
+        f"识别意图：**{labels.get(intent_value, intent_value)}** · "
+        f"来源：`{routing.source}` · 置信度：{decision.confidence:.0%}\n\n"
+        f"判断依据：{decision.reason}"
+    )
+    if routing.usage is not None:
+        st.caption(
+            "本次意图识别 Token："
+            f"输入 {routing.usage.input_tokens}，输出 {routing.usage.output_tokens}。"
+        )
+    if routing.fallback_error:
+        st.caption("已使用安全降级路由：" + routing.fallback_error)
+
+
+def _render_retrieval_evidence(st: Any, result: dict[str, Any]) -> None:
+    """Show the snippets and source names that grounded a RAG answer."""
+
+    evidence: list[tuple[str, dict[str, Any]]] = []
+    for item in result.get("trace") or []:
+        if item.get("name") not in {
+            "search_knowledge",
+            "search_error_solution",
+            "search_similar_experiments",
+        }:
+            continue
+        output = item.get("output") or {}
+        for entry in output.get("results") or []:
+            if isinstance(entry, dict):
+                evidence.append((str(item.get("name")), entry))
+    if not evidence:
+        return
+
+    st.subheader("RAG 检索依据")
+    for index, (tool_name, entry) in enumerate(evidence, start=1):
+        source = str(entry.get("source") or "unknown source")
+        score = entry.get("score")
+        title = f"{index}. {source} · {tool_name}"
+        if isinstance(score, (int, float)):
+            title += f" · 相关度 {score:.3f}"
+        with st.expander(title):
+            st.markdown(str(entry.get("text") or "未返回片段。"))
+
+
 def _render_result(
     st: Any, execution: UiAgentExecution, output_dir: Path, config: UiRunConfig
 ) -> None:
@@ -1195,6 +1504,11 @@ def _render_result(
                 st.error(diagnosis.get("summary", "Agent 工具执行失败。"))
                 st.caption(f"建议：{diagnosis.get('recommended_action', '')}")
                 break
+
+    if execution.intent_routing is not None:
+        _render_intent_routing(st, execution.intent_routing)
+    _render_agent_conversation(st, result)
+    _render_retrieval_evidence(st, result)
 
     called_tools = {str(item.get("name")) for item in result.get("trace") or []}
     if "get_runtime_preflight" in called_tools or any(
@@ -1293,7 +1607,8 @@ def _render_result(
     st.subheader("Agent 调用记录")
     trace = result.get("trace") or []
     if trace:
-        st.dataframe(
+        _render_markdown_table(
+            st,
             [
                 {
                     "轮次": item.get("round_index"),
@@ -1303,8 +1618,7 @@ def _render_result(
                 }
                 for item in trace
             ],
-            use_container_width=True,
-            hide_index=True,
+            [("轮次", "轮次"), ("工具", "工具"), ("状态", "状态"), ("耗时（秒）", "耗时（秒）")],
         )
 
     estimated_cost = result.get("estimated_cost") or {}
@@ -1337,6 +1651,8 @@ def _render_result(
     for name in (
         "report.md",
         "preflight.json",
+        "intent_decision.json",
+        "task_state.json",
         "agent_result.json",
         "metrics.json",
         "run_manifest.json",
@@ -1394,6 +1710,26 @@ def _store_stage_record(
     st.session_state["ui_stage_records"] = records
 
 
+def _remember_agent_crop_for_reuse(
+    st: Any,
+    config: UiRunConfig,
+    crop_key: tuple[Any, ...],
+    execution: UiAgentExecution,
+) -> None:
+    """Reuse a successful natural-language crop in the next request of this UI session."""
+
+    trace = (execution.result or {}).get("trace") or []
+    crop_completed = any(
+        item.get("name") == "prepare_tiff_crop" and item.get("status") == "completed"
+        for item in trace
+        if isinstance(item, dict)
+    )
+    manifest_path = config.output_dir / "prepared_crop" / "crop_manifest.json"
+    if crop_completed and manifest_path.is_file():
+        st.session_state["ui_crop_reuse_key"] = crop_key
+        st.session_state["ui_crop_manifest_path"] = manifest_path
+
+
 def sorted_stage_records(session_state: Any) -> list[UiStageRecord]:
     """Return retained stage results in newest-first completion order."""
 
@@ -1417,6 +1753,8 @@ def _render_stage_records(st: Any, config: UiRunConfig) -> Path | None:
             if record.stage == "agent":
                 _render_result(st, record.payload, record.output_dir or Path("."), config)
                 current_output_dir = record.output_dir
+            elif record.stage == "intent":
+                _render_intent_routing(st, record.payload)
             elif record.stage == "crop":
                 _render_crop_result(st, record.payload, config)
             elif record.stage == "input_check":
@@ -1500,19 +1838,27 @@ def run_app() -> None:
 
     previous_crop = st.session_state.get("ui_crop_execution")
     current_crop_key = crop_reuse_key(config)
+    previous_manifest = st.session_state.get("ui_crop_manifest_path")
+    direct_crop_manifest = (
+        previous_crop.manifest_path
+        if isinstance(previous_crop, UiCropExecution) and previous_crop.return_code == 0
+        else None
+    )
+    reusable_manifest = direct_crop_manifest or (
+        previous_manifest if isinstance(previous_manifest, Path) else None
+    )
     reusing_crop = (
         config.input_mode == "tiff"
-        and isinstance(previous_crop, UiCropExecution)
-        and previous_crop.return_code == 0
-        and previous_crop.manifest_path.is_file()
+        and reusable_manifest is not None
+        and reusable_manifest.is_file()
         and st.session_state.get("ui_crop_reuse_key") == current_crop_key
     )
     if reusing_crop:
-        config = replace(config, crop_manifest_path=previous_crop.manifest_path)
+        config = replace(config, crop_manifest_path=reusable_manifest)
 
     st.subheader("功能操作")
     if reusing_crop:
-        st.caption(f"已复用本次配置的裁剪清单，不会重复裁剪：{previous_crop.manifest_path}")
+        st.caption(f"已复用本次配置的裁剪清单，不会重复裁剪：{reusable_manifest}")
     if config.input_mode == "tiff":
         check_col, preflight_col, crop_col, run_col = st.columns(4)
         if check_col.button("检查原始 TIFF 输入", use_container_width=True):
@@ -1528,6 +1874,7 @@ def run_app() -> None:
             else:
                 st.session_state["raw_tiff_input_check"] = raw_input_check
                 st.session_state["raw_tiff_input_check_key"] = raw_tiff_check_key(config)
+                record_ui_task_success(config, "inspect_raw_tiff_inputs")
                 progress.progress(100, text="原始 TIFF 输入检查完成")
                 _store_stage_record(
                     st,
@@ -1549,6 +1896,8 @@ def run_app() -> None:
                 st.session_state["ui_crop_execution"] = crop_execution
                 if crop_execution.return_code == 0:
                     st.session_state["ui_crop_reuse_key"] = current_crop_key
+                    st.session_state["ui_crop_manifest_path"] = crop_execution.manifest_path
+                    record_ui_task_success(config, "prepare_tiff_crop")
                     progress.progress(100, text="裁剪完成，可执行 Agent 融合")
                 else:
                     st.session_state.pop("ui_crop_reuse_key", None)
@@ -1573,6 +1922,7 @@ def run_app() -> None:
             else:
                 st.session_state["h5_input_check"] = h5_input_check
                 st.session_state["h5_input_check_key"] = h5_input_check_key(config)
+                record_ui_task_success(config, "inspect_yre151_h5")
                 progress.progress(100, text="H5 输入检查完成")
                 _store_stage_record(
                     st,
@@ -1600,6 +1950,7 @@ def run_app() -> None:
         else:
             preflight_payload = result.model_dump(mode="json")
             st.session_state["ui_preflight"] = preflight_payload
+            record_ui_task_success(config, "get_runtime_preflight")
             progress.progress(100, text="模型环境预检完成")
             _store_stage_record(
                 st,
@@ -1614,27 +1965,54 @@ def run_app() -> None:
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
-            agent_timeout = config.timeout_seconds + config.preflight_timeout_seconds + 30
-            progress, on_wait = _task_wait_reporter(st, "Agent 任务", agent_timeout)
-            try:
-                execution = run_with_elapsed(
-                    lambda: run_agent_from_ui(config),
-                    timeout_seconds=agent_timeout,
-                    on_wait=on_wait,
+            route_timeout = 45
+            route_progress, route_wait = _task_wait_reporter(st, "意图识别", route_timeout)
+            routing = run_with_elapsed(
+                lambda: classify_ui_intent(config),
+                timeout_seconds=route_timeout,
+                on_wait=route_wait,
+            )
+            intent_path = write_intent_decision(config, routing)
+            route_progress.progress(100, text="意图识别完成")
+            _store_stage_record(
+                st,
+                stage="intent",
+                title=f"意图识别 · {routing.decision.intent.value}",
+                payload=routing,
+                output_dir=intent_path.parent,
+            )
+
+            if routing.decision.intent is IntentKind.CLARIFY:
+                st.info("请补充说明你希望查询知识、检查数据、执行裁剪还是运行融合。")
+            elif routing.decision.requires_input_paths and not has_configured_input_paths(config):
+                missing = "、".join(missing_input_requirements(config))
+                st.warning(
+                    "识别到的任务需要本地输入数据，但当前缺少："
+                    f"**{missing}**。请先在左侧补充配置，再重新提交。"
                 )
-            except subprocess.TimeoutExpired:
-                st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
             else:
-                st.session_state["ui_execution"] = execution
-                st.session_state["ui_output_dir"] = config.output_dir
-                progress.progress(100, text="Agent 任务完成")
-                _store_stage_record(
-                    st,
-                    stage="agent",
-                    title="Agent 自然语言任务",
-                    payload=execution,
-                    output_dir=config.output_dir,
-                )
+                agent_timeout = config.timeout_seconds + config.preflight_timeout_seconds + 30
+                progress, on_wait = _task_wait_reporter(st, "Agent 任务", agent_timeout)
+                try:
+                    execution = run_with_elapsed(
+                        lambda: run_agent_from_ui(config, intent_routing=routing),
+                        timeout_seconds=agent_timeout,
+                        on_wait=on_wait,
+                    )
+                except subprocess.TimeoutExpired:
+                    st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
+                else:
+                    st.session_state["ui_execution"] = execution
+                    st.session_state["ui_output_dir"] = config.output_dir
+                    progress.progress(100, text="Agent 任务完成")
+                    _remember_agent_crop_for_reuse(st, config, current_crop_key, execution)
+                    _store_stage_record(
+                        st,
+                        stage="agent",
+                        title="Agent 自然语言任务",
+                        payload=execution,
+                        output_dir=config.output_dir,
+                    )
 
     with st.container(border=True):
         current_output_dir = _render_stage_records(st, config)
