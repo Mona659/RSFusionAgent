@@ -33,7 +33,10 @@ class RagEvaluationReport(BaseModel):
 
 
 def _normalized_source(source: str) -> str:
-    return Path(source).as_posix()
+    # ``Path`` only interprets backslashes as separators on Windows. Normalize
+    # explicitly first so test fixtures and persisted source strings compare the
+    # same way on Windows and Linux CI runners.
+    return source.replace("\\", "/")
 
 
 def load_rag_evaluation_cases(path: str | Path) -> list[RagEvaluationCase]:
