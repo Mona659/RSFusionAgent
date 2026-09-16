@@ -26,7 +26,11 @@ from rsfusion_agent.tools.raster_inspector import inspect_raster
 from rsfusion_agent.tools.raster_preview import render_raster_rgb
 from rsfusion_agent.tools.tiff_crop import ExperimentMode, crop_tiff_triplet
 from rsfusion_agent.tools.tiff_patch import inspect_manifest_crop_triplet
-from rsfusion_agent.tools.tiff_triplet import inspect_tiff_triplet
+from rsfusion_agent.tools.tiff_triplet import (
+    AlignmentMode,
+    EXTERNAL_REGISTRATION_ALIGNMENT,
+    inspect_tiff_triplet,
+)
 
 
 class LLMToolContext(BaseModel):
@@ -478,6 +482,7 @@ class TiffLLMToolContext(BaseModel):
     model_python: Path
     output_dir: Path
     experiment_mode: ExperimentMode | None = None
+    alignment_mode: AlignmentMode = EXTERNAL_REGISTRATION_ALIGNMENT
     patch_size: int | None = Field(default=None, gt=0)
     patch_index: int | None = Field(default=None, ge=0)
     row_offset: int = Field(default=0, ge=0)
@@ -729,7 +734,12 @@ class TiffAgentToolbox:
         auxiliary_ms, auxiliary_hs, target_ms = self._require_raw_inputs()
         if self.context.experiment_mode == "simulation" and self.context.target_hs_reference_path is None:
             raise ValueError("Simulation mode requires a configured target-time HS TIFF reference")
-        inspection = inspect_tiff_triplet(auxiliary_ms, auxiliary_hs, target_ms)
+        inspection = inspect_tiff_triplet(
+            auxiliary_ms,
+            auxiliary_hs,
+            target_ms,
+            alignment_mode=self.context.alignment_mode,
+        )
         output_dir = self.context.output_dir.expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         artifacts: dict[str, str] = {}
@@ -759,6 +769,7 @@ class TiffAgentToolbox:
         self.raw_inputs_inspected = True
         return {
             "ok": True,
+            "alignment_mode": inspection.alignment_mode,
             "is_ready_for_preprocessing": inspection.is_ready_for_preprocessing,
             "auxiliary_ms": inspection.auxiliary_ms.model_dump(mode="json"),
             "auxiliary_hs": inspection.auxiliary_hs.model_dump(mode="json"),
@@ -791,6 +802,7 @@ class TiffAgentToolbox:
             window_width=self.context.window_width,
             hs_row_offset=self.context.hs_row_offset,
             hs_col_offset=self.context.hs_col_offset,
+            alignment_mode=self.context.alignment_mode,
         )
         self.active_crop_manifest_path = Path(result.manifest_path)
         return {

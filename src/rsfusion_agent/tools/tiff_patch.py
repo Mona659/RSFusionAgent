@@ -14,7 +14,12 @@ from rasterio.windows import Window
 from rsfusion_agent.tools.h5_patch import HS_BANDS, MS_BANDS, NORM_FACTOR, SCALE
 from rsfusion_agent.tools.raster_inspector import inspect_raster
 from rsfusion_agent.tools.tiff_crop import TiffCropResult, load_crop_manifest
-from rsfusion_agent.tools.tiff_triplet import TiffTripletInspection, inspect_tiff_triplet
+from rsfusion_agent.tools.tiff_triplet import (
+    AlignmentMode,
+    STRICT_METADATA_ALIGNMENT,
+    TiffTripletInspection,
+    inspect_tiff_triplet,
+)
 
 
 class TiffPatchSpatialMetadata(BaseModel):
@@ -146,6 +151,7 @@ def inspect_manifest_crop_triplet(crop_manifest_path: str | Path) -> tuple[TiffT
             expected_ms_bands=MS_BANDS,
             expected_hs_bands=HS_BANDS,
             grid_tolerance=0.0,
+            alignment_mode=crop.alignment_mode,
             is_ready_for_preprocessing=True,
             blocking_issues=[],
             warnings=warnings,
@@ -243,6 +249,7 @@ def prepare_tiff_patch(
     patch_size: int = 180,
     row_offset: int = 0,
     col_offset: int = 0,
+    alignment_mode: AlignmentMode = STRICT_METADATA_ALIGNMENT,
 ) -> PreparedTiffPatch:
     """Create the existing runtime NPZ input from one raw TIFF triplet crop.
 
@@ -258,6 +265,7 @@ def prepare_tiff_patch(
         scale=SCALE,
         expected_ms_bands=MS_BANDS,
         expected_hs_bands=HS_BANDS,
+        alignment_mode=alignment_mode,
     )
     if not inspection.is_ready_for_preprocessing:
         details = " ".join(inspection.blocking_issues)
@@ -271,7 +279,7 @@ def prepare_tiff_patch(
         patch_size=patch_size,
         row_offset=row_offset,
         col_offset=col_offset,
-        alignment_mode="strict_geospatial",
+        alignment_mode=alignment_mode,
         target_hs_reference_path=(
             str(Path(target_hs_reference_path).expanduser().resolve())
             if target_hs_reference_path is not None

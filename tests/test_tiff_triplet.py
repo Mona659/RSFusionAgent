@@ -4,7 +4,10 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-from rsfusion_agent.tools.tiff_triplet import inspect_tiff_triplet
+from rsfusion_agent.tools.tiff_triplet import (
+    EXTERNAL_REGISTRATION_ALIGNMENT,
+    inspect_tiff_triplet,
+)
 
 
 def _write_raster(
@@ -57,4 +60,26 @@ def test_inspect_tiff_triplet_reports_grid_and_band_failures(tmp_path: Path) -> 
 
     assert result.is_ready_for_preprocessing is False
     assert any("150 bands" in issue for issue in result.blocking_issues)
-    assert any("share CRS, bounds, dimensions" in issue for issue in result.blocking_issues)
+    assert any("matching pixel dimensions" in issue for issue in result.blocking_issues)
+
+
+def test_external_registration_keeps_metadata_differences_as_warnings(tmp_path: Path) -> None:
+    auxiliary_ms = tmp_path / "aux_ms.tif"
+    auxiliary_hs = tmp_path / "aux_hs.tif"
+    target_ms = tmp_path / "target_ms.tif"
+    _write_raster(auxiliary_ms, bands=4, width=12, height=9, resolution=0.5)
+    # Dimensions still satisfy the model's 3x contract, while metadata deliberately differ.
+    _write_raster(auxiliary_hs, bands=151, width=4, height=3, resolution=1.6)
+    _write_raster(target_ms, bands=4, width=12, height=9, resolution=0.55)
+
+    result = inspect_tiff_triplet(
+        auxiliary_ms,
+        auxiliary_hs,
+        target_ms,
+        alignment_mode=EXTERNAL_REGISTRATION_ALIGNMENT,
+    )
+
+    assert result.is_ready_for_preprocessing is True
+    assert result.blocking_issues == []
+    assert result.alignment_mode == EXTERNAL_REGISTRATION_ALIGNMENT
+    assert any("External-registration declaration" in warning for warning in result.warnings)

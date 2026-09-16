@@ -11,6 +11,10 @@ from rasterio.windows import Window
 
 from rsfusion_agent.tools.h5_patch import HS_BANDS, MS_BANDS, SCALE
 from rsfusion_agent.tools.raster_inspector import RasterInspectionResult, inspect_raster
+from rsfusion_agent.tools.tiff_triplet import (
+    AlignmentMode,
+    EXTERNAL_REGISTRATION_ALIGNMENT,
+)
 
 YRE_LEGACY_TEST_PROFILE = "yre_legacy_test_v1"
 CUSTOM_PROFILE = "custom"
@@ -33,6 +37,7 @@ class TiffCropResult(BaseModel):
 
     profile: str
     experiment_mode: ExperimentMode = REAL_EXPERIMENT
+    alignment_mode: AlignmentMode = EXTERNAL_REGISTRATION_ALIGNMENT
     auxiliary_ms_source: RasterInspectionResult
     auxiliary_hs_source: RasterInspectionResult
     target_ms_source: RasterInspectionResult
@@ -172,8 +177,14 @@ def crop_tiff_triplet(
     window_width: int | None = None,
     hs_row_offset: int | None = None,
     hs_col_offset: int | None = None,
+    alignment_mode: AlignmentMode = EXTERNAL_REGISTRATION_ALIGNMENT,
 ) -> TiffCropResult:
-    """Write native-grid crops shared by the real and simulated experiment pipelines."""
+    """Write native-grid crops shared by the real and simulated experiment pipelines.
+
+    The mode documents whether the caller requires strict geospatial metadata equality or
+    supplies an external-registration declaration for the explicit source-pixel windows.
+    It never triggers automatic registration or reprojection.
+    """
 
     auxiliary_ms = inspect_raster(auxiliary_ms_path)
     auxiliary_hs = inspect_raster(auxiliary_hs_path)
@@ -222,6 +233,11 @@ def crop_tiff_triplet(
         "Crops preserve each source TIFF's native georeferencing. The configured pixel windows "
         "are an explicit correspondence assumption, not automatic registration or reprojection."
     ]
+    if alignment_mode == EXTERNAL_REGISTRATION_ALIGNMENT:
+        warnings.append(
+            "The caller declared externally registered inputs. Minor CRS/bounds/resolution metadata "
+            "differences are retained for traceability and are not corrected by this workflow."
+        )
     if experiment_mode == SIMULATION_EXPERIMENT:
         warnings.append(
             "Simulation mode retains the native target-HS crop as reduced-resolution ground truth; "
@@ -235,6 +251,7 @@ def crop_tiff_triplet(
     result = TiffCropResult(
         profile=profile,
         experiment_mode=experiment_mode,
+        alignment_mode=alignment_mode,
         auxiliary_ms_source=auxiliary_ms,
         auxiliary_hs_source=auxiliary_hs,
         target_ms_source=target_ms,

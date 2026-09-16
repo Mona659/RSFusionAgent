@@ -40,7 +40,11 @@ from rsfusion_agent.tools.tiff_crop import (
     YRE_LEGACY_TEST_PROFILE,
     crop_tiff_triplet,
 )
-from rsfusion_agent.tools.tiff_triplet import inspect_tiff_triplet
+from rsfusion_agent.tools.tiff_triplet import (
+    EXTERNAL_REGISTRATION_ALIGNMENT,
+    STRICT_METADATA_ALIGNMENT,
+    inspect_tiff_triplet,
+)
 
 
 def _emit_json(payload: dict, *, indent: int | None) -> None:
@@ -111,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
     tiff_triplet_parser.add_argument("--expected-ms-bands", type=int, default=4)
     tiff_triplet_parser.add_argument("--expected-hs-bands", type=int, default=151)
     tiff_triplet_parser.add_argument("--grid-tolerance", type=float, default=1e-6)
+    tiff_triplet_parser.add_argument(
+        "--alignment-mode",
+        choices=(STRICT_METADATA_ALIGNMENT, EXTERNAL_REGISTRATION_ALIGNMENT),
+        default=STRICT_METADATA_ALIGNMENT,
+        help="Use strict metadata equality, or declare externally registered source-pixel correspondence.",
+    )
     tiff_triplet_parser.add_argument("--pretty", action="store_true")
 
     crop_tiff_parser = subparsers.add_parser(
@@ -141,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     crop_tiff_parser.add_argument("--window-width", type=int)
     crop_tiff_parser.add_argument("--hs-row-offset", type=int)
     crop_tiff_parser.add_argument("--hs-col-offset", type=int)
+    crop_tiff_parser.add_argument(
+        "--alignment-mode",
+        choices=(STRICT_METADATA_ALIGNMENT, EXTERNAL_REGISTRATION_ALIGNMENT),
+        default=EXTERNAL_REGISTRATION_ALIGNMENT,
+        help="Record whether crop windows rely on strict metadata or an external-registration declaration.",
+    )
     crop_tiff_parser.add_argument("--pretty", action="store_true")
 
     h5_parser = subparsers.add_parser(
@@ -326,6 +342,12 @@ def build_parser() -> argparse.ArgumentParser:
     tiff_agent_parser.add_argument("--target-ms")
     tiff_agent_parser.add_argument("--target-hs-reference")
     tiff_agent_parser.add_argument("--crop-profile", default="yre_legacy_test_v1")
+    tiff_agent_parser.add_argument(
+        "--alignment-mode",
+        choices=(STRICT_METADATA_ALIGNMENT, EXTERNAL_REGISTRATION_ALIGNMENT),
+        default=EXTERNAL_REGISTRATION_ALIGNMENT,
+        help="External mode keeps metadata mismatches as warnings; it never performs registration.",
+    )
     tiff_agent_parser.add_argument("--ms-row-offset", type=int)
     tiff_agent_parser.add_argument("--ms-col-offset", type=int)
     tiff_agent_parser.add_argument("--window-height", type=int)
@@ -407,6 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_ms_bands=args.expected_ms_bands,
                 expected_hs_bands=args.expected_hs_bands,
                 grid_tolerance=args.grid_tolerance,
+                alignment_mode=args.alignment_mode,
             )
         except (FileNotFoundError, ValueError) as exc:
             parser.error(str(exc))
@@ -430,6 +453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 window_width=args.window_width,
                 hs_row_offset=args.hs_row_offset,
                 hs_col_offset=args.hs_col_offset,
+                alignment_mode=args.alignment_mode,
             )
         except (FileNotFoundError, ValueError) as exc:
             parser.error(str(exc))
@@ -618,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 history_dir=Path(args.history_dir) if args.history_dir else None,
                 task_state_path=Path(args.task_state_path) if args.task_state_path else None,
                 experiment_mode=args.experiment_mode,
+                alignment_mode=args.alignment_mode,
                 patch_size=args.patch_size,
                 patch_index=args.patch_index,
                 row_offset=args.row_offset,

@@ -48,6 +48,7 @@ class UiRunConfig:
     target_ms_path: Path | None = None
     target_hs_reference_path: Path | None = None
     experiment_mode: str = "real"
+    alignment_mode: str = "external_registration"
     crop_manifest_path: Path | None = None
     crop_profile: str = "yre_legacy_test_v1"
     ms_row_offset: int | None = None
@@ -164,6 +165,7 @@ def crop_reuse_key(config: UiRunConfig) -> tuple[Any, ...]:
     return (
         config.input_mode,
         config.experiment_mode,
+        config.alignment_mode,
         str(config.auxiliary_ms_path),
         str(config.auxiliary_hs_path),
         str(config.target_ms_path),
@@ -190,7 +192,11 @@ def raw_tiff_check_key(config: UiRunConfig) -> tuple[str, ...]:
         config.target_ms_path,
         config.target_hs_reference_path,
     )
-    return (config.experiment_mode, *(str(path) if path is not None else "" for path in paths))
+    return (
+        config.experiment_mode,
+        config.alignment_mode,
+        *(str(path) if path is not None else "" for path in paths),
+    )
 
 
 def h5_input_check_key(config: UiRunConfig) -> tuple[str, str]:
@@ -368,6 +374,8 @@ def build_agent_command(
                 config.crop_profile,
                 "--experiment-mode",
                 config.experiment_mode,
+                "--alignment-mode",
+                config.alignment_mode,
                 "--patch-size",
                 str(config.patch_size),
                 "--patch-index",
@@ -461,6 +469,8 @@ def build_crop_command(config: UiRunConfig, *, python_executable: str | None = N
         config.crop_profile,
         "--experiment-mode",
         config.experiment_mode,
+        "--alignment-mode",
+        config.alignment_mode,
         "--pretty",
     ]
     if config.experiment_mode == "simulation" and config.target_hs_reference_path is None:
@@ -513,7 +523,12 @@ def inspect_raw_tiff_inputs(
     auxiliary_ms_path = config.auxiliary_ms_path.resolve()
     auxiliary_hs_path = config.auxiliary_hs_path.resolve()
     target_ms_path = config.target_ms_path.resolve()
-    inspection = inspect_tiff_triplet(auxiliary_ms_path, auxiliary_hs_path, target_ms_path)
+    inspection = inspect_tiff_triplet(
+        auxiliary_ms_path,
+        auxiliary_hs_path,
+        target_ms_path,
+        alignment_mode=config.alignment_mode,
+    )
     target_hs_reference = None
     target_hs_reference_rgb = None
     if config.target_hs_reference_path is not None:
@@ -810,6 +825,7 @@ def _build_config(st: Any) -> UiRunConfig:
         auxiliary = target = ""
         auxiliary_ms = auxiliary_hs = target_ms = target_hs_reference = ""
         experiment_mode = "real"
+        alignment_mode = "external_registration"
         crop_profile = "yre_legacy_test_v1"
         ms_row = ms_col = window_height = window_width = hs_row = hs_col = None
         raw_bounds: TiffCropSourceBounds | None = None
@@ -842,10 +858,24 @@ def _build_config(st: Any) -> UiRunConfig:
                 st.caption(
                     "模拟：T2 HS 原始裁剪作为低分辨率真值；真实：若提供则 3×插值后仅作伪标签。"
                 )
+                alignment_label = st.selectbox(
+                    "空间对应声明",
+                    ("已外部配准（推荐）", "严格元数据一致校验"),
+                    help=(
+                        "已外部配准：保留 CRS、范围、分辨率差异为警告，按你配置的源像素窗口裁剪；"
+                        "系统不会自动配准或重投影。严格模式才会把这些元数据差异作为阻断条件。"
+                    ),
+                )
+                alignment_mode = (
+                    "external_registration"
+                    if alignment_label.startswith("已外部")
+                    else "strict_metadata"
+                )
         if is_tiff:
             cached_raw_check = st.session_state.get("raw_tiff_input_check")
             current_raw_check_key = (
                 experiment_mode,
+                alignment_mode,
                 auxiliary_ms,
                 auxiliary_hs,
                 target_ms,
@@ -1162,6 +1192,7 @@ def _build_config(st: Any) -> UiRunConfig:
         target_ms_path=Path(target_ms) if target_ms else None,
         target_hs_reference_path=Path(target_hs_reference) if target_hs_reference else None,
         experiment_mode=experiment_mode,
+        alignment_mode=alignment_mode,
         crop_profile=crop_profile,
         ms_row_offset=ms_row,
         ms_col_offset=ms_col,
@@ -1203,11 +1234,14 @@ def _render_raw_tiff_input_check(st: Any, result: RawTiffInputCheck | None) -> N
         return
     st.subheader("原始 TIFF 输入检查")
     if result.is_ready_for_preprocessing:
-        st.success("三景 TIFF 的元数据满足严格预处理契约。")
+        if any("External-registration mode" in warning for warning in result.warnings):
+            st.success("输入满足模型像素尺寸与波段契约；已按“外部配准”声明继续。")
+        else:
+            st.success("三景 TIFF 的元数据满足严格预处理契约。")
     else:
         st.warning(
-            "检测到源 TIFF 的空间网格或波段存在差异。当前 YRE 数据可继续按明确的"
-            "源像素裁剪窗口生成 crop manifest；系统不会自动配准、重投影或重采样。"
+            "检测到会破坏模型输入契约的波段、尺寸或缺少地理参考问题。请修正后再裁剪；"
+            "空间元数据的轻微差异仅在“严格元数据一致校验”模式下会阻断流程。"
         )
         for issue in result.blocking_issues:
             st.caption(f"检查项：{issue}")

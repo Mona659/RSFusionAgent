@@ -8,10 +8,16 @@ without loading pixels, and never reprojects, registers, or resamples data.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from rsfusion_agent.tools.raster_inspector import RasterInspectionResult, inspect_raster
+
+
+STRICT_METADATA_ALIGNMENT = "strict_metadata"
+EXTERNAL_REGISTRATION_ALIGNMENT = "external_registration"
+AlignmentMode = Literal["strict_metadata", "external_registration"]
 
 
 class TiffTripletInspection(BaseModel):
@@ -24,6 +30,7 @@ class TiffTripletInspection(BaseModel):
     expected_ms_bands: int = Field(gt=0)
     expected_hs_bands: int = Field(gt=0)
     grid_tolerance: float = Field(ge=0.0)
+    alignment_mode: AlignmentMode = STRICT_METADATA_ALIGNMENT
     is_ready_for_preprocessing: bool
     blocking_issues: list[str]
     warnings: list[str]
@@ -58,21 +65,6 @@ def _same_bounds(
     )
 
 
-def _same_grid(
-    left: RasterInspectionResult,
-    right: RasterInspectionResult,
-    tolerance: float,
-) -> bool:
-    return (
-        left.width == right.width
-        and left.height == right.height
-        and left.crs == right.crs
-        and _same_bounds(left, right, tolerance)
-        and _close(left.resolution[0], right.resolution[0], tolerance)
-        and _close(left.resolution[1], right.resolution[1], tolerance)
-    )
-
-
 def inspect_tiff_triplet(
     auxiliary_ms_path: str | Path,
     auxiliary_hs_path: str | Path,
@@ -82,12 +74,16 @@ def inspect_tiff_triplet(
     expected_ms_bands: int = 4,
     expected_hs_bands: int = 151,
     grid_tolerance: float = 1e-6,
+    alignment_mode: AlignmentMode = STRICT_METADATA_ALIGNMENT,
 ) -> TiffTripletInspection:
     """Validate a raw TIFF triplet against the planned YRE preprocessing contract.
 
-    A ready report means only that metadata is compatible with the future adapter;
-    it does not mean the rasters are radiometrically registered or that inference has
-    been performed.
+    ``strict_metadata`` requires matching CRS/bounds/resolution metadata. In
+    ``external_registration`` mode, the caller explicitly declares that inputs were
+    registered outside this system and pixel crop windows carry the correspondence.
+    Metadata discrepancies are then reported as warnings, never silently corrected.
+    In both modes, band counts and the model's 3x pixel-dimension contract are hard
+    requirements. A ready report never proves registration quality or inference.
     """
 
     if scale <= 1:
@@ -96,12 +92,23 @@ def inspect_tiff_triplet(
         raise ValueError("Expected band counts must be positive")
     if grid_tolerance < 0:
         raise ValueError("Grid tolerance cannot be negative")
+    if alignment_mode not in (STRICT_METADATA_ALIGNMENT, EXTERNAL_REGISTRATION_ALIGNMENT):
+        raise ValueError(f"Unsupported alignment mode: {alignment_mode}")
 
     auxiliary_ms = inspect_raster(auxiliary_ms_path)
     auxiliary_hs = inspect_raster(auxiliary_hs_path)
     target_ms = inspect_raster(target_ms_path)
     issues: list[str] = []
     warnings: list[str] = []
+
+    def record_metadata_difference(message: str) -> None:
+        if alignment_mode == STRICT_METADATA_ALIGNMENT:
+            issues.append(f"{message} Strict metadata mode requires this metadata to match.")
+        else:
+            warnings.append(
+                "External-registration declaration: "
+                f"{message} It is retained as a warning because no automatic registration or reprojection is performed."
+            )
 
     for role, raster, expected_bands in (
         ("auxiliary MS", auxiliary_ms, expected_ms_bands),
@@ -115,16 +122,25 @@ def inspect_tiff_triplet(
         if not raster.is_georeferenced:
             issues.append(f"{role} has no CRS; raw-TIFF preprocessing requires georeferencing.")
 
-    if not _same_grid(auxiliary_ms, target_ms, grid_tolerance):
+    if (auxiliary_ms.width, auxiliary_ms.height) != (target_ms.width, target_ms.height):
         issues.append(
-            "Auxiliary MS and target MS must share CRS, bounds, dimensions and resolution; "
-            "registration/reprojection is not performed automatically."
+            "Auxiliary MS and target MS must have matching pixel dimensions; "
+            "explicit crop windows require a common MS output grid."
+        )
+    if (
+        auxiliary_ms.crs != target_ms.crs
+        or not _same_bounds(auxiliary_ms, target_ms, grid_tolerance)
+        or not _close(auxiliary_ms.resolution[0], target_ms.resolution[0], grid_tolerance)
+        or not _close(auxiliary_ms.resolution[1], target_ms.resolution[1], grid_tolerance)
+    ):
+        record_metadata_difference(
+            "Auxiliary MS and target MS CRS, bounds or resolution metadata differ."
         )
 
     if auxiliary_ms.crs != auxiliary_hs.crs:
-        issues.append("Auxiliary MS and auxiliary HS must use the same CRS.")
+        record_metadata_difference("Auxiliary MS and auxiliary HS CRS metadata differ.")
     if not _same_bounds(auxiliary_ms, auxiliary_hs, grid_tolerance):
-        issues.append("Auxiliary MS and auxiliary HS must cover the same spatial bounds.")
+        record_metadata_difference("Auxiliary MS and auxiliary HS spatial bounds differ.")
 
     expected_hs_width = auxiliary_hs.width * scale
     expected_hs_height = auxiliary_hs.height * scale
@@ -140,15 +156,22 @@ def inspect_tiff_triplet(
         ("y", auxiliary_ms.resolution[1], auxiliary_hs.resolution[1]),
     ):
         if not _close(hs_resolution, ms_resolution * scale, grid_tolerance):
-            issues.append(
-                f"Auxiliary HS {axis} resolution must equal auxiliary MS resolution times {scale}."
+            record_metadata_difference(
+                f"Auxiliary HS {axis} resolution differs from the expected {scale}x MS resolution."
             )
 
-    if not issues:
+    if alignment_mode == EXTERNAL_REGISTRATION_ALIGNMENT:
         warnings.append(
-            "Metadata is compatible with the planned TIFF adapter. "
-            "Radiometric normalization and pixel-level registration remain the caller's responsibility."
+            "External-registration mode accepts the configured source-pixel correspondence. "
+            "Confirm that registration was completed before this workflow; this system does not "
+            "estimate residual offsets, reproject, or resample source TIFFs."
         )
+    if not issues:
+        if alignment_mode == STRICT_METADATA_ALIGNMENT:
+            warnings.append(
+                "Metadata is compatible with the planned TIFF adapter. "
+                "Radiometric normalization and pixel-level registration remain the caller's responsibility."
+            )
 
     return TiffTripletInspection(
         auxiliary_ms=auxiliary_ms,
@@ -158,6 +181,7 @@ def inspect_tiff_triplet(
         expected_ms_bands=expected_ms_bands,
         expected_hs_bands=expected_hs_bands,
         grid_tolerance=grid_tolerance,
+        alignment_mode=alignment_mode,
         is_ready_for_preprocessing=not issues,
         blocking_issues=issues,
         warnings=warnings,

@@ -103,7 +103,12 @@ Check raw TIFFs → set source crop range → create crop manifest → choose mo
 ```
 
 After a successful TIFF input check, custom MS/HS crop controls are constrained by the
-smallest compatible input dimensions. The UI distinguishes **source TIFF crop size**
+smallest compatible input dimensions. The default **external-registration** declaration
+matches the original YRE workflow: inputs already registered outside this system use
+explicit source-pixel correspondence, while small CRS/bounds/resolution metadata differences
+remain traceable warnings rather than automatic rejection. It never estimates residual offsets,
+registers or reprojects data. Select **strict metadata** only when exact CRS/bounds/resolution
+equality is a hard prerequisite for the experiment. The UI distinguishes **source TIFF crop size**
 from **model Patch size**: for simulation, the latter is measured after 3× degradation;
 for real experiments, it is measured on the HS-upsampled MS grid. V1 uses square,
 non-overlapping model Patches.

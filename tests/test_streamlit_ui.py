@@ -291,9 +291,11 @@ def test_build_tiff_commands_bind_the_manifest_and_configured_crop_paths(tmp_pat
     assert agent_command[agent_command.index("--patch-size") + 1] == "180"
     assert agent_command[agent_command.index("--patch-index") + 1] == "0"
     assert agent_command[agent_command.index("--experiment-mode") + 1] == "simulation"
+    assert agent_command[agent_command.index("--alignment-mode") + 1] == "external_registration"
     assert crop_command[:4] == ["ui-python.exe", "-m", "rsfusion_agent.cli", "crop-tiff-triplet"]
     assert crop_command[crop_command.index("--profile") + 1] == "custom"
     assert crop_command[crop_command.index("--experiment-mode") + 1] == "simulation"
+    assert crop_command[crop_command.index("--alignment-mode") + 1] == "external_registration"
     assert crop_command[crop_command.index("--hs-col-offset") + 1] == "120"
     assert crop_command[crop_command.index("--target-hs-reference") + 1] == str(
         tmp_path / "target_hs.tif"
@@ -413,6 +415,7 @@ def test_raw_tiff_check_key_and_crop_bounds_follow_the_smallest_required_input(
 
     assert raw_tiff_check_key(config) == (
         "simulation",
+        "external_registration",
         str(auxiliary_ms),
         str(auxiliary_hs),
         str(target_ms),
