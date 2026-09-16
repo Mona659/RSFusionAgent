@@ -159,6 +159,17 @@ class UiStageRecord:
     output_dir: Path | None = None
 
 
+@dataclass(frozen=True)
+class UiChatTurn:
+    """One persisted user or assistant message in the active browser session."""
+
+    role: str
+    content: str
+    created_at: datetime
+    result: dict[str, Any] | None = None
+    pending: bool = False
+
+
 def crop_reuse_key(config: UiRunConfig) -> tuple[Any, ...]:
     """Identify the exact TIFF inputs and windows authorized by one crop manifest."""
 
@@ -713,6 +724,82 @@ def classify_ui_intent(config: UiRunConfig) -> IntentRoutingResult:
     return IntentRouter(client).route(config.request)
 
 
+def _is_llm_quota_exhausted(message: str) -> bool:
+    """Recognise Bailian's exhausted-free-tier response without exposing secrets."""
+
+    normalized = message.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "free quota exhausted",
+            "allocationquota.freetieronly",
+            "free tier only",
+            "permission_denied",
+        )
+    )
+
+
+def _local_knowledge_fallback(
+    config: UiRunConfig, *, request: str
+) -> tuple[str, dict[str, Any]]:
+    """Answer a read-only request from the offline RAG corpus when the LLM is unavailable."""
+
+    knowledge_dir = config.knowledge_dir
+    if not config.enable_rag or knowledge_dir is None or not knowledge_dir.is_dir():
+        return (
+            "当前大模型服务不可用，且本地知识库未配置，暂时无法完成该问答。"
+            "请恢复模型额度，或在左侧启用并配置本地知识库后重试。",
+            {"trace": []},
+        )
+
+    try:
+        from rsfusion_agent.rag.retriever import LocalKnowledgeRetriever
+
+        results = LocalKnowledgeRetriever.from_directory(knowledge_dir).search(request, top_k=3)
+    except (OSError, ValueError) as exc:
+        return (
+            "当前大模型服务不可用，本地知识库检索也未能完成："
+            f"`{type(exc).__name__}: {exc}`。",
+            {"trace": []},
+        )
+
+    serialised_results = [
+        {
+            "text": item.text,
+            "source": item.source,
+            "score": item.score,
+            "chunk_index": item.chunk_index,
+        }
+        for item in results
+    ]
+    result = {
+        "trace": [
+            {
+                "name": "search_knowledge",
+                "status": "completed",
+                "output": {"ok": True, "query": request, "results": serialised_results},
+            }
+        ]
+    }
+    if not results:
+        return (
+            "当前大模型免费额度已耗尽，已改用本地知识库检索；但没有找到与该问题相关的资料。"
+            "可换用更具体的项目术语，或恢复模型服务后重试。",
+            result,
+        )
+
+    excerpts = "\n\n".join(
+        f"**资料 {index} · `{item.source}`**\n{item.text}"
+        for index, item in enumerate(results, start=1)
+    )
+    return (
+        "当前大模型免费额度已耗尽，已自动切换为**本地 RAG 检索**。"
+        "以下是命中的项目资料原文：\n\n"
+        f"{excerpts}",
+        result,
+    )
+
+
 def write_intent_decision(config: UiRunConfig, routing: IntentRoutingResult) -> Path:
     """Persist routing evidence next to the agent result for reproducibility."""
 
@@ -1145,6 +1232,9 @@ def _build_config(st: Any) -> UiRunConfig:
             output_root = st.text_input("输出根目录", value="outputs/ui_runs")
             st.caption(f"当前运行目录：ui_run_{st.session_state['ui_run_id']}")
 
+        with st.expander("⑤ 历史运行", expanded=False):
+            _render_history_selector(st, Path(output_root), show_heading=False)
+
         # Resolve repository-local resources automatically; users can still override
         # these through environment variables when launching the UI elsewhere.
         knowledge_default = _env_default("RSFUSION_KNOWLEDGE_DIR", str(repo_root / "knowledge"))
@@ -1157,27 +1247,8 @@ def _build_config(st: Any) -> UiRunConfig:
         knowledge_dir_text = st.text_input("本地知识库目录", value=knowledge_default)
         history_dir_text = st.text_input("历史实验目录", value=history_default)
 
-    default_request = (
-        "请先检查数据，再融合第0个patch，并汇报PSNR、SAM、SSIM和输出文件。"
-        if not is_tiff
-        else (
-            "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标。"
-            if experiment_mode == "simulation"
-            else "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
-        )
-    )
-    with st.form("natural_language_task_form", clear_on_submit=False):
-        request = st.text_area(
-            "自然语言任务",
-            value=default_request,
-            height=110,
-            help="填写任务后点击提交，或在文本框中按 Ctrl+Enter 提交。",
-        )
-        submit_task = st.form_submit_button("提交自然语言任务（Ctrl+Enter）")
-    if submit_task:
-        st.session_state["ui_submit_agent"] = True
     return UiRunConfig(
-        request=request,
+        request="",
         checkpoint_path=Path(checkpoint),
         model_python=Path(model_python),
         output_dir=Path(output_root) / f"ui_run_{st.session_state['ui_run_id']}",
@@ -1212,6 +1283,45 @@ def _build_config(st: Any) -> UiRunConfig:
         preflight_timeout_seconds=int(preflight_timeout),
         runtime_retries=int(runtime_retries),
     )
+
+
+def _default_agent_request(config: UiRunConfig) -> str:
+    """Provide a useful first prompt without making the chat a fixed workflow."""
+
+    if config.input_mode != "tiff":
+        return "请先检查数据，再融合第0个 patch，并汇报 PSNR、SAM、SSIM 和输出文件。"
+    if config.experiment_mode == "simulation":
+        return "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标。"
+    return "请检查裁剪清单，融合当前 TIFF patch，并汇报输出文件、运行时间和指标可用性。"
+
+
+def _render_chat_panel(st: Any, config: UiRunConfig) -> tuple[UiRunConfig, Any]:
+    """Render the conversational middle pane and reserve space for its replies."""
+
+    if "ui_chat_input" not in st.session_state:
+        st.session_state["ui_chat_input"] = _default_agent_request(config)
+    with st.container(height=960, border=True, key="chat_workspace"):
+        # This inner container owns its own scroll bar, so reviewing results on
+        # the right never moves the conversation away from its input area.
+        with st.container(height=735, key="chat_history"):
+            messages_slot = st.empty()
+        with st.form("natural_language_task_form", clear_on_submit=True):
+            request = st.text_area(
+                "输入消息",
+                height=130,
+                placeholder="例如：帮我检查输入数据；当前任务状态是什么；模拟实验的目标 HS 是什么？",
+                help="支持知识问答、状态查询、输入检查、裁剪和融合。按 Ctrl+Enter 或点击发送。",
+                key="ui_chat_input",
+            )
+            submit_task = st.form_submit_button("发送", type="primary", use_container_width=True)
+    if submit_task and request.strip():
+        submitted_request = request.strip()
+        _append_chat_turn(st, role="user", content=submitted_request)
+        _append_chat_turn(st, role="assistant", content="正在理解你的任务…", pending=True)
+        st.session_state["ui_pending_agent_request"] = submitted_request
+        with messages_slot.container():
+            _render_chat_history(st)
+    return replace(config, request=request), messages_slot
 
 
 def _render_preflight(st: Any, payload: dict[str, Any] | None) -> None:
@@ -1594,7 +1704,14 @@ def _render_retrieval_evidence(st: Any, result: dict[str, Any]) -> None:
 
 
 def _render_result(
-    st: Any, execution: UiAgentExecution, output_dir: Path, config: UiRunConfig
+    st: Any,
+    execution: UiAgentExecution,
+    output_dir: Path,
+    config: UiRunConfig,
+    *,
+    show_conversation: bool = True,
+    show_intent: bool = True,
+    show_retrieval: bool = True,
 ) -> None:
     result = execution.result
     if result is None:
@@ -1615,10 +1732,12 @@ def _render_result(
                 st.caption(f"建议：{diagnosis.get('recommended_action', '')}")
                 break
 
-    if execution.intent_routing is not None:
+    if show_intent and execution.intent_routing is not None:
         _render_intent_routing(st, execution.intent_routing)
-    _render_agent_conversation(st, result)
-    _render_retrieval_evidence(st, result)
+    if show_conversation:
+        _render_agent_conversation(st, result)
+    if show_retrieval:
+        _render_retrieval_evidence(st, result)
     _render_execution_observability(st, output_dir)
 
     called_tools = {str(item.get("name")) for item in result.get("trace") or []}
@@ -1850,24 +1969,60 @@ def sorted_stage_records(session_state: Any) -> list[UiStageRecord]:
     return sorted(records, key=lambda item: item.completed_at, reverse=True)
 
 
-def _render_stage_records(st: Any, config: UiRunConfig) -> Path | None:
-    """Render current-session stage results newest first and preserve older stages."""
+def _has_agent_operation_result(execution: UiAgentExecution) -> bool:
+    """Keep read-only RAG answers in chat instead of duplicating them in results."""
+
+    result = execution.result or {}
+    operation_tools = {
+        "inspect_raw_tiff_inputs",
+        "inspect_yre151_tiff_crop",
+        "prepare_tiff_crop",
+        "inspect_yre151_h5",
+        "get_runtime_preflight",
+        "run_yre151_tiff_fusion",
+        "run_yre151_fusion",
+    }
+    return any(
+        str(item.get("name")) in operation_tools
+        for item in result.get("trace") or []
+        if isinstance(item, dict)
+    )
+
+
+def _render_operation_results(st: Any, config: UiRunConfig) -> Path | None:
+    """Render visual and operational artifacts only; chat text stays in the middle pane."""
 
     records = sorted_stage_records(st.session_state)
-    st.subheader("本次配置执行记录")
-    if not records:
-        st.caption("尚未执行输入检查、环境预检、裁剪或融合。")
+    visible_records = [
+        record
+        for record in records
+        if record.stage in {"input_check", "h5_input_check", "preflight", "crop"}
+        or (
+            record.stage == "agent"
+            and isinstance(record.payload, UiAgentExecution)
+            and _has_agent_operation_result(record.payload)
+        )
+    ]
+    st.markdown("##### 执行结果")
+    if not visible_records:
+        st.caption("执行输入检查、环境预检、裁剪或融合后，数据预览、指标和结果文件会显示在这里。")
         return None
 
     current_output_dir: Path | None = None
-    for index, record in enumerate(records):
+    for index, record in enumerate(visible_records):
         label = f"{record.completed_at:%H:%M:%S} · {record.title}"
         with st.expander(label, expanded=index == 0):
             if record.stage == "agent":
-                _render_result(st, record.payload, record.output_dir or Path("."), config)
+                _render_result(
+                    st,
+                    record.payload,
+                    record.output_dir or Path("."),
+                    config,
+                    show_conversation=False,
+                    show_intent=False,
+                    show_retrieval=False,
+                )
                 current_output_dir = record.output_dir
-            elif record.stage == "intent":
-                _render_intent_routing(st, record.payload)
             elif record.stage == "crop":
                 _render_crop_result(st, record.payload, config)
             elif record.stage == "input_check":
@@ -1879,11 +2034,97 @@ def _render_stage_records(st: Any, config: UiRunConfig) -> Path | None:
     return current_output_dir
 
 
+def _render_task_notice(st: Any, payload: Any) -> None:
+    """Render a user-facing task response when a standalone notice is needed."""
+
+    if not isinstance(payload, dict):
+        return
+    title = str(payload.get("title") or "任务反馈")
+    message = str(payload.get("message") or "未返回可展示的任务反馈。")
+    level = str(payload.get("level") or "info")
+    st.subheader(title)
+    renderer = getattr(st, level, st.info)
+    renderer(message)
+
+
+def _append_chat_turn(
+    st: Any,
+    *,
+    role: str,
+    content: str,
+    result: dict[str, Any] | None = None,
+    pending: bool = False,
+) -> None:
+    """Append to session-scoped chat history independently from run artifacts."""
+
+    turns = list(st.session_state.get("ui_chat_turns", []))
+    turns.append(
+        UiChatTurn(
+            role=role,
+            content=content,
+            created_at=datetime.now(),
+            result=result,
+            pending=pending,
+        )
+    )
+    st.session_state["ui_chat_turns"] = turns
+
+
+def _complete_pending_chat_turn(
+    st: Any, *, content: str, result: dict[str, Any] | None = None
+) -> None:
+    """Replace the transient assistant status with the final user-facing answer."""
+
+    turns = list(st.session_state.get("ui_chat_turns", []))
+    for index in range(len(turns) - 1, -1, -1):
+        turn = turns[index]
+        if isinstance(turn, UiChatTurn) and turn.role == "assistant" and turn.pending:
+            turns[index] = replace(turn, content=content, result=result, pending=False)
+            st.session_state["ui_chat_turns"] = turns
+            return
+    _append_chat_turn(st, role="assistant", content=content, result=result)
+
+
+def _render_chat_history(st: Any) -> None:
+    """Render conversational turns in chronological order, like a focused chat UI."""
+
+    turns = [
+        turn
+        for turn in st.session_state.get("ui_chat_turns", [])
+        if isinstance(turn, UiChatTurn)
+    ]
+    if not turns:
+        st.markdown("### 开始一次融合实验")
+        st.caption("在下方描述你的任务。这里会保留知识问答、任务反馈与 Agent 的自然语言回复。")
+        st.markdown("可以尝试：`帮我检查输入数据`、`模拟实验的目标 HS 是什么？`、`帮我进行剪裁`。")
+        return
+
+    chat_message = getattr(st, "chat_message", None)
+    for turn in turns:
+        if callable(chat_message):
+            with chat_message(turn.role):
+                if turn.pending:
+                    st.caption("⏳ " + turn.content)
+                else:
+                    st.markdown(turn.content)
+                if turn.role == "assistant" and turn.result is not None:
+                    with st.expander("查看知识库依据", expanded=False):
+                        _render_retrieval_evidence(st, turn.result)
+        else:
+            if turn.role == "user":
+                st.markdown("**你**")
+                st.info(turn.content)
+            else:
+                st.markdown("**RSFusionAgent**")
+                st.success(turn.content)
+
+
 def _render_history_selector(
     st: Any,
     output_root: Path,
     *,
     current_output_dir: Path | None = None,
+    show_heading: bool = True,
 ) -> None:
     """Render previous runs after the current result, newest first."""
 
@@ -1891,8 +2132,9 @@ def _render_history_selector(
     if current_output_dir is not None:
         current_resolved = current_output_dir.resolve()
         history = [item for item in history if item.output_dir.resolve() != current_resolved]
-    st.divider()
-    st.subheader("历史记录")
+    if show_heading:
+        st.divider()
+        st.subheader("历史记录")
     if not history:
         st.caption("暂无其他已完成的 agent_result.json。")
         return
@@ -1916,6 +2158,17 @@ def _render_history_selector(
                 payload=st.session_state["ui_execution"],
                 output_dir=selected.output_dir,
             )
+            _append_chat_turn(
+                st,
+                role="user",
+                content=str(result.get("request") or "已加载历史 Agent 任务。"),
+            )
+            _append_chat_turn(
+                st,
+                role="assistant",
+                content=str(result.get("answer") or "历史运行未保存可展示的文本回答。"),
+                result=result,
+            )
 
 
 def _task_wait_reporter(st: Any, task_name: str, timeout_seconds: int) -> tuple[Any, WaitReporter]:
@@ -1936,18 +2189,22 @@ def _task_wait_reporter(st: Any, task_name: str, timeout_seconds: int) -> tuple[
     return progress, report
 
 
-def run_app() -> None:
-    """Render the Streamlit page without importing Streamlit during unit tests."""
+def _tool_execution_label(intent: IntentKind) -> str:
+    """Use a single user-facing progress label for one local tool workflow."""
 
-    try:
-        import streamlit as st
-    except ImportError as exc:
-        raise SystemExit('Install the UI dependency first: pip install -e ".[ui]"') from exc
+    labels = {
+        IntentKind.INSPECT_INPUTS: "检查本地输入",
+        IntentKind.INSPECT_CROP: "检查裁剪清单",
+        IntentKind.PREPARE_CROP: "执行数据裁剪",
+        IntentKind.RUN_FUSION: "执行融合推理",
+    }
+    return labels.get(intent, "执行本地工具")
 
-    st.set_page_config(page_title="RSFusionAgent", page_icon="🛰️", layout="wide")
-    st.title("RSFusionAgent · 遥感图像融合 Agent")
-    st.caption("本地运行：H5 数据与模型权重不会上传；API Key 仅从终端环境变量读取。")
-    config = _build_config(st)
+
+def _render_operation_panel(
+    st: Any, config: UiRunConfig, *, chat_messages_slot: Any | None = None
+) -> None:
+    """Render explicit local actions in the results pane beside their artifacts."""
 
     previous_crop = st.session_state.get("ui_crop_execution")
     current_crop_key = crop_reuse_key(config)
@@ -1969,17 +2226,12 @@ def run_app() -> None:
     if reusing_crop:
         config = replace(config, crop_manifest_path=reusable_manifest)
 
-    _render_task_execution_plan(
-        st,
-        config,
-        crop_manifest_available=bool(reusing_crop),
-    )
-    st.subheader("功能操作")
+    st.markdown("##### 快捷操作")
     if reusing_crop:
         st.caption(f"已复用本次配置的裁剪清单，不会重复裁剪：{reusable_manifest}")
     if config.input_mode == "tiff":
         check_col, preflight_col, crop_col, run_col = st.columns(4)
-        if check_col.button("检查原始 TIFF 输入", use_container_width=True):
+        if check_col.button("🔎 检查 TIFF", use_container_width=True):
             progress, on_wait = _task_wait_reporter(st, "原始 TIFF 输入检查", 60)
             try:
                 raw_input_check = run_with_elapsed(
@@ -2000,7 +2252,7 @@ def run_app() -> None:
                     title="原始 TIFF 输入检查",
                     payload=raw_input_check,
                 )
-        if crop_col.button("执行裁剪", use_container_width=True):
+        if crop_col.button("✂️ 执行裁剪", use_container_width=True):
             progress, on_wait = _task_wait_reporter(st, "裁剪", config.timeout_seconds)
             try:
                 crop_execution = run_with_elapsed(
@@ -2027,7 +2279,7 @@ def run_app() -> None:
                 )
     else:
         check_col, preflight_col, run_col = st.columns(3)
-        if check_col.button("检查 H5 输入", use_container_width=True):
+        if check_col.button("🔎 检查 H5", use_container_width=True):
             progress, on_wait = _task_wait_reporter(st, "H5 输入检查", 60)
             try:
                 h5_input_check = run_with_elapsed(
@@ -2048,7 +2300,7 @@ def run_app() -> None:
                     title=f"H5 输入检查 · Patch {config.patch_index}",
                     payload=h5_input_check,
                 )
-    if preflight_col.button("预检模型环境", use_container_width=True):
+    if preflight_col.button("🧪 环境预检", use_container_width=True):
         from rsfusion_agent.tools.model_runtime import preflight_yre151_runtime
 
         progress, on_wait = _task_wait_reporter(st, "模型环境预检", config.preflight_timeout_seconds)
@@ -2077,21 +2329,30 @@ def run_app() -> None:
                 payload=preflight_payload,
             )
 
-    run_requested = run_col.button("执行 Agent 融合", type="primary", use_container_width=True)
-    run_requested = run_requested or st.session_state.pop("ui_submit_agent", False)
+    direct_run_requested = run_col.button(
+        "🚀 执行 Agent 融合", type="primary", use_container_width=True
+    )
+    queued_request = st.session_state.pop("ui_pending_agent_request", None)
+    run_requested = direct_run_requested or isinstance(queued_request, str)
+    request_already_in_chat = isinstance(queued_request, str)
+    if isinstance(queued_request, str):
+        config = replace(config, request=queued_request)
+
     if run_requested:
         if not config.request.strip():
             st.error("请输入自然语言任务。")
         else:
-            route_timeout = 45
-            route_progress, route_wait = _task_wait_reporter(st, "意图识别", route_timeout)
-            routing = run_with_elapsed(
-                lambda: classify_ui_intent(config),
-                timeout_seconds=route_timeout,
-                on_wait=route_wait,
-            )
+            if not request_already_in_chat:
+                _append_chat_turn(st, role="user", content=config.request.strip())
+                _append_chat_turn(st, role="assistant", content="正在理解你的任务…", pending=True)
+                if chat_messages_slot is not None:
+                    with chat_messages_slot.container():
+                        _render_chat_history(st)
+
+            # Intent recognition is an internal, usually fast step. It is recorded
+            # for observability but deliberately has no competing progress bar.
+            routing = classify_ui_intent(config)
             intent_path = write_intent_decision(config, routing)
-            route_progress.progress(100, text="意图识别完成")
             _store_stage_record(
                 st,
                 stage="intent",
@@ -2100,17 +2361,53 @@ def run_app() -> None:
                 output_dir=intent_path.parent,
             )
 
-            if routing.decision.intent is IntentKind.CLARIFY:
-                st.info("请补充说明你希望查询知识、检查数据、执行裁剪还是运行融合。")
+            # Once Bailian reports the free-tier quota is exhausted, avoid
+            # repeatedly spending a failed network round-trip for later
+            # read-only questions in this browser session. Local RAG remains
+            # available because it never sends project data or calls a model.
+            quota_exhausted = bool(st.session_state.get("ui_llm_quota_exhausted", False))
+            if (
+                quota_exhausted
+                and routing.decision.intent is IntentKind.KNOWLEDGE_QUERY
+                and not routing.decision.requires_input_paths
+            ):
+                answer, fallback_result = _local_knowledge_fallback(
+                    config, request=config.request.strip()
+                )
+                _complete_pending_chat_turn(st, content=answer, result=fallback_result)
+            elif routing.decision.intent is IntentKind.CLARIFY:
+                message = "请补充说明你希望查询知识、检查数据、执行裁剪还是运行融合。"
+                _store_stage_record(
+                    st,
+                    stage="notice",
+                    title="任务需要补充说明",
+                    payload={"title": "任务反馈", "level": "info", "message": message},
+                )
+                _complete_pending_chat_turn(st, content=message)
             elif routing.decision.requires_input_paths and not has_configured_input_paths(config):
                 missing = "、".join(missing_input_requirements(config))
-                st.warning(
+                message = (
                     "识别到的任务需要本地输入数据，但当前缺少："
                     f"**{missing}**。请先在左侧补充配置，再重新提交。"
                 )
+                _store_stage_record(
+                    st,
+                    stage="notice",
+                    title="任务缺少输入配置",
+                    payload={"title": "任务反馈", "level": "warning", "message": message},
+                )
+                _complete_pending_chat_turn(st, content=message)
             else:
                 agent_timeout = config.timeout_seconds + config.preflight_timeout_seconds + 30
-                progress, on_wait = _task_wait_reporter(st, "Agent 任务", agent_timeout)
+                operation_request = routing.decision.requires_input_paths
+                progress: Any | None = None
+                on_wait: WaitReporter | None = None
+                if operation_request:
+                    tool_label = _tool_execution_label(routing.decision.intent)
+                    st.caption(
+                        f"任务步骤：已识别任务 → 正在调用本地工具（{tool_label}）→ 生成结果"
+                    )
+                    progress, on_wait = _task_wait_reporter(st, tool_label, agent_timeout)
                 try:
                     execution = run_with_elapsed(
                         lambda: run_agent_from_ui(config, intent_routing=routing),
@@ -2118,11 +2415,15 @@ def run_app() -> None:
                         on_wait=on_wait,
                     )
                 except subprocess.TimeoutExpired:
-                    st.error("Agent 进程超时。请检查模型环境或适当增大融合超时。")
+                    message = "Agent 进程超时。请检查模型环境或适当增大融合超时。"
+                    if operation_request:
+                        st.error(message)
+                    _complete_pending_chat_turn(st, content=message)
                 else:
                     st.session_state["ui_execution"] = execution
                     st.session_state["ui_output_dir"] = config.output_dir
-                    progress.progress(100, text="Agent 任务完成")
+                    if progress is not None:
+                        progress.progress(100, text="本地工具执行完成")
                     _remember_agent_crop_for_reuse(st, config, current_crop_key, execution)
                     _store_stage_record(
                         st,
@@ -2131,14 +2432,103 @@ def run_app() -> None:
                         payload=execution,
                         output_dir=config.output_dir,
                     )
+                    result = execution.result
+                    raw_output = execution.stderr or execution.stdout
+                    if (
+                        result is None
+                        and routing.decision.intent is IntentKind.KNOWLEDGE_QUERY
+                        and _is_llm_quota_exhausted(raw_output)
+                    ):
+                        st.session_state["ui_llm_quota_exhausted"] = True
+                        answer, fallback_result = _local_knowledge_fallback(
+                            config, request=config.request.strip()
+                        )
+                        _complete_pending_chat_turn(
+                            st, content=answer, result=fallback_result
+                        )
+                    else:
+                        answer = (
+                            str(result.get("answer") or "Agent 未返回可展示的文本回答。")
+                            if result is not None
+                            else raw_output or "Agent 未生成可解析的结果。"
+                        )
+                        _complete_pending_chat_turn(st, content=answer, result=result)
 
-    with st.container(border=True):
-        current_output_dir = _render_stage_records(st, config)
-        _render_history_selector(
-            st,
-            config.output_dir.parent,
-            current_output_dir=current_output_dir,
-        )
+def run_app() -> None:
+    """Render a three-pane Streamlit workbench without importing Streamlit in tests."""
+
+    try:
+        import streamlit as st
+    except ImportError as exc:
+        raise SystemExit('Install the UI dependency first: pip install -e ".[ui]"') from exc
+
+    st.set_page_config(page_title="RSFusionAgent", page_icon="🛰️", layout="wide")
+    st.markdown(
+        """
+        <style>
+        /* Use the available viewport instead of Streamlit's presentation-style whitespace. */
+        [data-testid="stMainBlockContainer"], .block-container {
+            max-width: none !important;
+            padding: 0.65rem 1.35rem 0.45rem !important;
+        }
+        h1 {
+            margin-top: 0 !important;
+            margin-bottom: 0.05rem !important;
+            font-size: 2.05rem !important;
+        }
+        [data-testid="stCaptionContainer"] {
+            margin-bottom: 0 !important;
+        }
+        [data-testid="stDivider"] {
+            margin: 0.45rem 0 0.75rem !important;
+        }
+        /* Give secondary controls a clear filled appearance instead of the default transparent look. */
+        [data-testid="stButton"] > button[kind="secondary"] {
+            background: #e8f0ff;
+            border: 1px solid #8fb1ff;
+            color: #174ea6;
+            font-weight: 650;
+        }
+        [data-testid="stButton"] > button[kind="secondary"]:hover {
+            background: #d6e4ff;
+            border-color: #4c7fe8;
+            color: #123b84;
+        }
+        [data-testid="stButton"] > button[kind="primary"],
+        [data-testid="stFormSubmitButton"] > button[kind="primary"] {
+            background: #e85d3f;
+            border-color: #e85d3f;
+            font-weight: 700;
+        }
+        .st-key-chat_workspace,
+        .st-key-result_workspace {
+            background: #ffffff;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+        }
+        .st-key-chat_history {
+            background: #fbfcff;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.title("RSFusionAgent · 遥感图像融合 Agent")
+    st.caption("本地运行：H5 数据与模型权重不会上传；API Key 仅从终端环境变量读取。")
+    st.divider()
+
+    chat_column, result_column = st.columns((1.05, 1.5), gap="medium")
+    with chat_column:
+        base_config = _build_config(st)
+        config, chat_messages_slot = _render_chat_panel(st, base_config)
+
+    with result_column:
+        with st.container(height=960, border=True, key="result_workspace"):
+            _render_operation_panel(st, config, chat_messages_slot=chat_messages_slot)
+            st.divider()
+            _render_operation_results(st, config)
+
+    with chat_messages_slot.container():
+        _render_chat_history(st)
 
 
 def main() -> None:
