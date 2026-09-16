@@ -12,8 +12,8 @@ from rasterio.windows import Window
 from rsfusion_agent.tools.h5_patch import HS_BANDS, MS_BANDS, SCALE
 from rsfusion_agent.tools.raster_inspector import RasterInspectionResult, inspect_raster
 from rsfusion_agent.tools.tiff_triplet import (
-    AlignmentMode,
     EXTERNAL_REGISTRATION_ALIGNMENT,
+    AlignmentMode,
 )
 
 YRE_LEGACY_TEST_PROFILE = "yre_legacy_test_v1"

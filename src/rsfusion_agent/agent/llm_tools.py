@@ -27,8 +27,8 @@ from rsfusion_agent.tools.raster_preview import render_raster_rgb
 from rsfusion_agent.tools.tiff_crop import ExperimentMode, crop_tiff_triplet
 from rsfusion_agent.tools.tiff_patch import inspect_manifest_crop_triplet
 from rsfusion_agent.tools.tiff_triplet import (
-    AlignmentMode,
     EXTERNAL_REGISTRATION_ALIGNMENT,
+    AlignmentMode,
     inspect_tiff_triplet,
 )
 

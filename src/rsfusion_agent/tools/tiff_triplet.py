@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 
 from rsfusion_agent.tools.raster_inspector import RasterInspectionResult, inspect_raster
 
-
 STRICT_METADATA_ALIGNMENT = "strict_metadata"
 EXTERNAL_REGISTRATION_ALIGNMENT = "external_registration"
 AlignmentMode = Literal["strict_metadata", "external_registration"]

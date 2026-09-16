@@ -15,8 +15,8 @@ from rsfusion_agent.tools.h5_patch import HS_BANDS, MS_BANDS, NORM_FACTOR, SCALE
 from rsfusion_agent.tools.raster_inspector import inspect_raster
 from rsfusion_agent.tools.tiff_crop import TiffCropResult, load_crop_manifest
 from rsfusion_agent.tools.tiff_triplet import (
-    AlignmentMode,
     STRICT_METADATA_ALIGNMENT,
+    AlignmentMode,
     TiffTripletInspection,
     inspect_tiff_triplet,
 )
