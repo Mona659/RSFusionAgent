@@ -161,9 +161,9 @@ H5 路径无需 TIFF 裁剪清单，但同样通过独立模型运行时执行�
 
 以下项目均有当前代码/仓库证据，但严重程度和产品取舍仍需后续确认：
 
-1. **README/旧文档漂移**：部分段落仍把 TIFF 适配、错误检索或实验历史检索描述为未来工作，但相关实现已存在；`docs/llm_agent.md` 的工具表也少于当前工具箱。
-2. **四份本地文档不属于发布内容**：当前工作区的 `docs/v1_development_summary.md`、`docs/v2_development_summary.md`、`docs/v2_1_development_plan.md`、`docs/v2_five_day_plan.md` 是作者个人开发计划/总结，按作者决定只保存在本地，不应提交或上传到公开仓库。
-3. **许可证边界尚未落地**：`pyproject.toml` 声明 Apache-2.0，README 使用“planned”表述，且根目录没有已跟踪的 `LICENSE`。作者已确认 DC_STSF 是个人算法模型且尚未开源，因此应用代码与模型代码不能在没有明确许可拆分的情况下笼统使用同一开源声明。
+1. **旧技术文档仍有漂移**：公开 README 已按当前代码同步，但 `docs/data_contract.md`、`docs/llm_agent.md` 和 `tools/tiff_triplet.py` 的部分历史表述仍把 TIFF 适配描述为未来工作，且早期工具表少于当前工具箱。
+2. **四份本地计划不属于发布内容**：`docs/v1_development_summary.md`、`docs/v2_development_summary.md`、`docs/v2_1_development_plan.md`、`docs/v2_five_day_plan.md` 不属于公开仓库，当前工作区也不存在这些文件；后续不得重新加入公开提交。
+3. **许可证采用明确拆分**：应用、Agent、工具、RAG、UI、测试和文档代码采用根目录 Apache-2.0；`src/rsfusion_agent/models/dc_stsf.py` 与相关模型权重明确排除，受 `MODEL_LICENSE.md` 的保留权利条款约束。
 4. **保留但未进入当前流程的枚举值**：`TaskStage.INFERENCE_AUTHORIZED` 与 `PlanStepStatus.NOT_REQUIRED` 在当前定义中存在，但现有转换/计划构建没有实际产生这些值。
 5. **任务状态是线性摘要**：输入检查、预检等可以独立完成，但 `stage` 使用单一有序枚举；实际依赖判断依赖 `completed_tools`，仅阅读 `stage` 可能丢失并行维度。
 6. **工具 Schema 多处维护**：工具 JSON Schema、工具箱处理和可选 LangChain 包装之间存在人工同步成本。

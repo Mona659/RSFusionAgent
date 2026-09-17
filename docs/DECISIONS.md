@@ -274,11 +274,27 @@ CLI 统一写入结构化 JSON，UI 以只读方式载入历史结果，恢复�
 **Constraint**  
 字段删除、重命名或语义变化必须检查所有消费者，并为既有本地文件提供兼容读取或清晰迁移说明。
 
+## D-017 — Split the application license from the proprietary model license
+
+**Decision**
+应用、Agent、工具、RAG、UI、测试和文档代码采用根目录 Apache License 2.0。`src/rsfusion_agent/models/dc_stsf.py` 以及任何 DC_STSF 权重、Checkpoint、转换权重或权重衍生物明确排除在该授权范围之外，由 `MODEL_LICENSE.md` 保留全部权利。
+
+**Context**
+公开仓库需要明确的应用工程许可证，但 DC_STSF 是作者个人持有、尚未开源的算法模型。原有 `pyproject.toml` 的笼统 Apache-2.0 元数据、README 的 planned 表述和缺失的根许可证会让应用代码与模型代码的权利边界不清晰。
+
+**Reason**
+拆分许可既允许招聘展示和社区复用应用工程部分，也避免公开许可证被错误解释为对模型结构和权重的授权。作者已明确确认这一许可策略。
+
+**Current Implementation**
+根目录 `LICENSE` 提供 Apache-2.0 正文；`MODEL_LICENSE.md` 列出排除材料；README、`pyproject.toml` 和开发规范同步说明该边界。公开仓库不包含模型权重或私有 YRE 数据。
+
+**Constraint**
+新增模型实现或权重时必须明确其许可归属。不得删除模型排除说明、把 DC_STSF 文件纳入 Apache-2.0，或在未取得书面许可时使用、修改、再分发模型材料。未来打包或发布 Python 分发物时必须保留两份许可证说明。
+
 ## Items Requiring Confirmation
 
 已确认：Python 包正式版本为 `1.1.1`，当前项目开发版本为 V2.1；四份未跟踪开发计划/总结只保存在本地；“长期记忆”仅指当前本地历史实验检索；DC_STSF 是作者个人算法且尚未开源。
 
 仍需确认：
 
-1. 应用/工具代码未来是否开源，以及如何在许可证和仓库结构上与未开源 DC_STSF 模型隔离。
-2. `TaskStage.INFERENCE_AUTHORIZED`、`PlanStepStatus.NOT_REQUIRED` 是计划接入的保留接口，还是可在兼容迁移后移除。
+1. `TaskStage.INFERENCE_AUTHORIZED`、`PlanStepStatus.NOT_REQUIRED` 是计划接入的保留接口，还是可在兼容迁移后移除。

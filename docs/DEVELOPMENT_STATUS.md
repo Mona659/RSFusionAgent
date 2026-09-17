@@ -42,6 +42,8 @@
 - 旧结果修改时间检查，防止本轮失败时展示上轮 `agent_result.json`。
 - Ruff、pytest 和 GitHub Actions Python 3.10 CI 配置。
 - 20 个测试模块覆盖 Agent、工具、状态、计划、RAG、可观测性、H5/TIFF、指标、运行时桥接和 UI 辅助逻辑。
+- 公开 README 已按 V2.1 实际能力重写，明确区分已实现功能、私有验证、限制与 V2.2/V2.3 路线图。
+- 应用/工具等代码采用 Apache-2.0；DC_STSF 模型源码及相关权重通过 `MODEL_LICENSE.md` 明确排除。
 
 ## In Progress
 
@@ -49,19 +51,20 @@
 
 1. **Streamlit 交互与布局**：最近两个提交集中修改配置持久化、对话区和页面布局。辅助逻辑有 pytest 覆盖，但没有真实浏览器端到端/响应式布局测试。当前用户已要求暂时忽略布局问题，因此本轮不修改 UI。
 2. **LLM 供应商配置兼容**：Qwen Responses 端点和模型配置刚在 `dc8182b` 调整。客户端逻辑和测试存在，但外部模型可用性、免费额度、实际模型 ID 和服务端错误取决于用户账户与供应商，仓库无法保证。
-3. **版本/发布文档统一**：作者已确认当前 Python 包正式版本为 `1.1.1`、项目正式开发版本为 V2.1，但 README 和历史文档尚未统一表达这两个不同层级的版本标识。
-4. **当前文档同步**：本次已新增五份持久化上下文文档，但 README、`docs/data_contract.md`、`docs/llm_agent.md` 和部分源码 docstring 仍保留“未来 TIFF 适配器”或旧工具列表等历史表述。根据本轮要求，未修改这些现有文件。
+3. **旧技术文档同步**：公开 README 已统一表达 Python 包版本 `1.1.1` 与项目开发阶段 V2.1，并按实际代码更新工具、状态、RAG 和 TIFF 能力。`docs/data_contract.md`、`docs/llm_agent.md` 和部分源码 docstring 仍保留早期表述，后续应单独同步。
+4. **下一阶段评测设计**：V2.2 已确定以 Agent 任务级评测和可回放回归为核心，但评测 Schema、用例集、CLI 和指标实现尚未进入代码。
 
 ## Pending
 
-以下事项来自当前已跟踪 README/`docs/v1_release.md` 的明确未完成项或仓库缺口；没有据此推断排期：
+以下事项来自当前实现、公开路线图和已跟踪设计文档中的明确未完成项；没有据此推断排期：
 
 - TIFF 三元组到旧版 HDF5 训练数据集的构建。
 - 自动配准、重投影和像素级/定量对齐评估。
 - 整景滑窗推理、重叠加权和 Mosaic 导出。
 - 通用模型选择/多模型适配。当前只有内置 YRE DC_STSF 运行时契约。
-- 明确应用代码与未开源 DC_STSF 模型代码的许可边界；当前还没有可直接执行的许可证方案。
-- 对当前 README 与旧技术文档做一次不改变业务逻辑的内容同步。
+- 对 `docs/data_contract.md`、`docs/llm_agent.md` 和过时 TIFF docstring 做不改变业务逻辑的内容同步。
+- V2.2 Agent 任务级评测：意图、工具选择、参数、调用顺序、状态、恢复、安全、延迟和成本。
+- V2.3 服务与工具互操作：FastAPI、SSE、SQLite 任务持久化、MCP 和轻量控制面容器化。
 
 注意：`docs/v1_release.md` 还把实验检索和长期记忆列为早期 deferred 项。作者已确认当前项目中的“长期记忆”仅指基于历史 `agent_result.json` 的本地实验摘要检索；该范围已经实现，不包含额外的跨项目向量记忆或服务化记忆需求。
 
@@ -79,11 +82,10 @@
 
 ### Documentation and repository
 
-- README 的 capability checklist 仍把 solution retrieval 和 experiment memory 标为未完成，但代码中已有 `error_retriever.py` 和 `experiment_memory.py`。
-- README、`docs/data_contract.md` 及 `tools/tiff_triplet.py` 的部分文字仍称 TIFF adapter 为 future/planned，与当前 TIFF 工作流不一致。
+- `docs/data_contract.md` 及 `tools/tiff_triplet.py` 的部分文字仍称 TIFF adapter 为 future/planned，与当前 TIFF 工作流不一致。
 - `docs/llm_agent.md` 的早期工具表未覆盖当前 RAG、状态、预检和 TIFF 工具。
-- README 链接的 `docs/v1_development_summary.md` 及同类 V2 计划/总结当前为未跟踪工作区文件，不属于 `HEAD`；作者已决定只在本地保存，不上传公开仓库。README 对该未发布文件的链接仍属于文档问题。
-- `pyproject.toml` 声明 Apache-2.0，而 README 仍写 planned，且根目录没有 `LICENSE`。DC_STSF 已确认为作者个人未开源模型，应用与模型的许可边界仍需后续处理。
+- 四份个人 V1/V2 计划与总结不属于公开仓库，当前工作区也不存在这些文件；不得重新添加公开 README 链接。
+- 许可边界已拆分：根目录 Apache-2.0 覆盖应用/工具等代码，DC_STSF 模型源码及权重受 `MODEL_LICENSE.md` 单独约束。
 - README 中记录的私有 YRE 演示指标不能仅靠当前仓库复现，因为数据与 Checkpoint 未提交。本次审查没有把它们当作重新验证结果。
 
 ## Recent Changes
@@ -106,14 +108,15 @@
 
 ## Next Recommended Development Task
 
-基于当前状态，最合理的下一项工作不是继续增加 Agent 功能，而是完成一个**发布基线与文档一致性任务**：
+下一项推荐工作是 **V2.2 Evaluation-Driven Reliable Agent**，先建立可量化、可回放、可在 CI 中回归的 Agent 任务级评测，再扩展服务化能力：
 
-1. 在 README/发布文档中统一说明：包版本为 `1.1.1`，当前项目开发版本为 V2.1。
-2. 明确许可拆分：应用/工具代码是否采用开源许可，以及未开源 DC_STSF 源码和权重如何与公开仓库隔离。
-3. 在不改业务逻辑的前提下，同步 README、`docs/data_contract.md`、`docs/llm_agent.md` 及过时 TIFF docstring，使其反映当前工具与工作流，并移除对四份本地私有文档的公开链接。
-4. 为当前版本建立可重复验证清单：Ruff、完整 pytest、CLI smoke test、可选私有 GPU/TIFF 测试、手动浏览器 UI 检查，并明确哪些结果不能在 CI 复现。
+1. 定义版本化评测用例 Schema，描述请求、预期意图、必须/允许/禁止工具、顺序约束、预期状态和安全边界。
+2. 提供离线 replay 客户端与 `evaluate-agent` CLI，避免基线依赖实时 LLM 额度、GPU 或私有数据。
+3. 输出任务成功率、意图准确率、工具选择、参数合法性、依赖违规、越权推理、恢复成功率、延迟、Token 和成本指标。
+4. 将 Prompt Injection、路径泄漏、重复调用、陈旧结果和未经授权推理纳入安全回归。
+5. 生成 JSON/Markdown 报告，并在 GitHub Actions 中执行确定性评测子集。
 
-上述任务直接解决当前仓库事实与文档/发布表述不一致的问题，不引入新产品需求。完成后再由用户选择是优先稳定 UI，还是进入已记录的整景/配准/多模型方向。
+V2.2 稳定后进入 V2.3：在保留 CLI 和独立模型运行时的前提下增加 FastAPI、SSE、SQLite 任务持久化、MCP Server、轻量控制面 Docker 镜像和 OpenTelemetry 接口。
 
 ## Validation Snapshot
 

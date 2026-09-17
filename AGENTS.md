@@ -26,6 +26,8 @@ RSFusionAgent/
 ├── scripts/         # 离线恢复等辅助脚本
 ├── examples/        # 可公开运行的小型示例
 ├── .github/workflows/ci.yml
+├── LICENSE
+├── MODEL_LICENSE.md
 ├── pyproject.toml
 └── README.md
 ```
@@ -58,7 +60,7 @@ RSFusionAgent/
 - **可观测性脱敏**：Trace 可以记录工具名、状态、耗时和参数字段名，但不能泄漏绝对路径、API Key、原始数据或权重。
 - **当前不是 LangGraph 架构**：不要在未有明确需求的情况下引入 LangGraph。现有 LangChain 仅为 `StructuredTool` 适配层。
 - **当前不是向量 RAG**：现有 RAG 为本地词法检索，不依赖 Embedding 或向量数据库。
-- **模型许可边界**：DC_STSF 是项目作者个人持有、尚未开源的算法模型。不得擅自把模型源码、权重或衍生实现声明为 Apache-2.0 等开源许可。
+- **模型许可边界**：根目录 `LICENSE` 的 Apache-2.0 仅覆盖应用、Agent、工具、RAG、UI、测试和文档代码。`src/rsfusion_agent/models/dc_stsf.py` 及相关权重明确排除在外，受 `MODEL_LICENSE.md` 约束；不得把模型源码、权重或衍生实现声明为 Apache-2.0。
 
 ## 5. Important Files
 

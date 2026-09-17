@@ -8,7 +8,7 @@ version = "1.1.1"
 description = "An executable agent for remote sensing image fusion"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = { text = "Apache-2.0 for application/tool code; DC-STSF model code excluded, see MODEL_LICENSE.md" }
 authors = [
   { name = "Mona659" }
 ]
