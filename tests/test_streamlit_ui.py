@@ -13,8 +13,13 @@ from rsfusion_agent.ui.streamlit_app import (
     UiAgentExecution,
     UiRunConfig,
     UiStageRecord,
+    _append_chat_turn,
+    _complete_pending_chat_turn,
     _load_crop_preview_cards,
+    _load_ui_preferences,
+    _read_chat_turns,
     _remember_agent_crop_for_reuse,
+    _save_ui_preferences,
     build_agent_command,
     build_crop_command,
     crop_reuse_key,
@@ -53,6 +58,43 @@ def _write_h5(path: Path, *, offset: int = 0) -> None:
     data = np.arange(2 * 12 * 15 * 306, dtype=np.int32).reshape(2, 12, 15, 306)
     with h5py.File(path, "w") as handle:
         handle.create_dataset("test", data=((data + offset) % 5000).astype(np.int16))
+
+
+def test_chat_history_uses_reload_safe_session_values() -> None:
+    class FakeStreamlit:
+        def __init__(self) -> None:
+            self.session_state: dict[str, object] = {}
+
+    st = FakeStreamlit()
+    _append_chat_turn(st, role="user", content="第一轮问题")
+    _append_chat_turn(st, role="assistant", content="正在理解你的任务…", pending=True)
+    _complete_pending_chat_turn(st, content="第一轮回答")
+    _append_chat_turn(st, role="user", content="第二轮问题")
+
+    persisted = st.session_state["ui_chat_turns"]
+    assert isinstance(persisted, list)
+    assert all(isinstance(item, dict) for item in persisted)
+    assert [(turn.role, turn.content) for turn in _read_chat_turns(st)] == [
+        ("user", "第一轮问题"),
+        ("assistant", "第一轮回答"),
+        ("user", "第二轮问题"),
+    ]
+
+
+def test_ui_preferences_are_local_and_non_secret(tmp_path: Path) -> None:
+    _save_ui_preferences(
+        tmp_path,
+        {
+            "provider": "qwen",
+            "llm_model": "qwen3.7-plus",
+            "base_url": "https://workspace.example/compatible-mode/v1",
+        },
+    )
+
+    assert _load_ui_preferences(tmp_path)["llm_model"] == "qwen3.7-plus"
+    assert "API_KEY" not in (tmp_path / "outputs" / "ui_preferences.json").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_simulation_tiff_requires_target_hs_reference_before_agent_call(tmp_path: Path) -> None:

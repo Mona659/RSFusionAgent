@@ -161,13 +161,70 @@ class UiStageRecord:
 
 @dataclass(frozen=True)
 class UiChatTurn:
-    """One persisted user or assistant message in the active browser session."""
+    """One normalized user or assistant message for rendering the active chat."""
 
     role: str
     content: str
     created_at: datetime
     result: dict[str, Any] | None = None
     pending: bool = False
+
+
+def _read_chat_turns(st: Any) -> list[UiChatTurn]:
+    """Read chat turns without relying on a Streamlit-reloaded class identity.
+
+    Streamlit executes this file again for every interaction.  Persisting raw
+    dataclass instances and later filtering with ``isinstance`` can therefore
+    discard an earlier turn after a script reload.  Session state stores plain
+    dictionaries instead; this reader also migrates a live legacy session.
+    """
+
+    turns: list[UiChatTurn] = []
+    for raw_turn in st.session_state.get("ui_chat_turns", []):
+        if isinstance(raw_turn, dict):
+            role = raw_turn.get("role")
+            content = raw_turn.get("content")
+            created_at = raw_turn.get("created_at")
+            result = raw_turn.get("result")
+            pending = raw_turn.get("pending", False)
+        else:
+            role = getattr(raw_turn, "role", None)
+            content = getattr(raw_turn, "content", None)
+            created_at = getattr(raw_turn, "created_at", None)
+            result = getattr(raw_turn, "result", None)
+            pending = getattr(raw_turn, "pending", False)
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            continue
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at)
+            except ValueError:
+                created_at = None
+        turns.append(
+            UiChatTurn(
+                role=role,
+                content=content,
+                created_at=created_at if isinstance(created_at, datetime) else datetime.now(),
+                result=result if isinstance(result, dict) else None,
+                pending=bool(pending),
+            )
+        )
+    return turns
+
+
+def _write_chat_turns(st: Any, turns: list[UiChatTurn]) -> None:
+    """Persist a reload-safe, non-secret representation of the visible chat."""
+
+    st.session_state["ui_chat_turns"] = [
+        {
+            "role": turn.role,
+            "content": turn.content,
+            "created_at": turn.created_at.isoformat(),
+            "result": turn.result,
+            "pending": turn.pending,
+        }
+        for turn in turns
+    ]
 
 
 def crop_reuse_key(config: UiRunConfig) -> tuple[Any, ...]:
@@ -901,13 +958,45 @@ def _env_default(name: str, fallback: str = "") -> str:
     return os.environ.get(name, fallback)
 
 
+def _ui_preferences_path(repo_root: Path) -> Path:
+    """Return the ignored local file used for non-secret UI preferences."""
+
+    return repo_root / "outputs" / "ui_preferences.json"
+
+
+def _load_ui_preferences(repo_root: Path) -> dict[str, Any]:
+    """Load saved local UI fields, never including an API key."""
+
+    preferences = load_json_object(_ui_preferences_path(repo_root))
+    return preferences if preferences is not None else {}
+
+
+def _save_ui_preferences(repo_root: Path, preferences: dict[str, Any]) -> None:
+    """Persist only benign connection and runtime defaults for the next restart."""
+
+    path = _ui_preferences_path(repo_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(preferences, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _preference_text(preferences: dict[str, Any], name: str, fallback: str) -> str:
+    """Prefer a saved non-empty string while retaining environment defaults."""
+
+    value = preferences.get(name)
+    return value if isinstance(value, str) and value else fallback
+
+
 def _build_config(st: Any) -> UiRunConfig:
     """Render configuration fields and return the current local-only run config."""
 
     if "ui_run_id" not in st.session_state:
         st.session_state["ui_run_id"] = datetime.now().strftime("%Y%m%d_%H%M%S")
     repo_root = Path(__file__).resolve().parents[3]
-    with st.sidebar:
+    preferences = _load_ui_preferences(repo_root)
+    # Streamlit normally reruns the whole script on every field change. Keeping
+    # configuration fields in one form means editing a path or parameter does
+    # not redraw the chat; the user explicitly applies the draft when ready.
+    with st.sidebar, st.form("ui_run_configuration", border=False):
         st.header("运行配置")
         auxiliary = target = ""
         auxiliary_ms = auxiliary_hs = target_ms = target_hs_reference = ""
@@ -1111,7 +1200,11 @@ def _build_config(st: Any) -> UiRunConfig:
             checkpoint = st.text_input("Checkpoint", value=_env_default("RSFUSION_CHECKPOINT"))
             model_python = st.text_input(
                 "模型 Conda Python",
-                value=_env_default("RSFUSION_MODEL_PYTHON", sys.executable),
+                value=_preference_text(
+                    preferences,
+                    "model_python",
+                    _env_default("RSFUSION_MODEL_PYTHON", sys.executable),
+                ),
                 help="必须填写安装了 PyTorch/CUDA 和原始模型依赖的 Conda Python；项目 .venv 仅用于 UI/Agent。",
             )
             project_venv_python = (repo_root / ".venv" / "Scripts" / "python.exe").resolve()
@@ -1120,10 +1213,46 @@ def _build_config(st: Any) -> UiRunConfig:
                     "当前填写的是项目 .venv，它默认不包含 PyTorch，无法运行模型。"
                     "请改为训练/推理 Conda 环境的 python.exe。"
                 )
-            provider = st.selectbox("LLM Provider", ("qwen", "openai", "deepseek", "custom"))
-            llm_model = st.text_input("模型 ID", value=_env_default("RSFUSION_LLM_MODEL"))
-            base_url = st.text_input("兼容 API Base URL", value=_env_default("RSFUSION_LLM_BASE_URL"))
-            device = st.selectbox("推理设备", ("cuda", "auto", "cpu"))
+            provider_options = ("qwen", "openai", "deepseek", "custom")
+            saved_provider = _preference_text(
+                preferences, "provider", _env_default("RSFUSION_LLM_PROVIDER", "qwen")
+            )
+            provider = st.selectbox(
+                "LLM Provider",
+                provider_options,
+                index=provider_options.index(saved_provider)
+                if saved_provider in provider_options
+                else 0,
+            )
+            llm_model = st.text_input(
+                "模型 ID",
+                value=_preference_text(
+                    preferences, "llm_model", _env_default("RSFUSION_LLM_MODEL")
+                ),
+            )
+            base_url = st.text_input(
+                "兼容 API Base URL",
+                value=_preference_text(
+                    preferences, "base_url", _env_default("RSFUSION_LLM_BASE_URL")
+                ),
+                help=(
+                    "本项目使用 OpenAI Responses API。Qwen 工作区的常见 Chat 地址"
+                    "（…/compatible-mode/v1）会被自动转换为对应的 Responses 地址，"
+                    "避免请求 /responses 时出现 404。"
+                ),
+            )
+            if provider == "qwen" and base_url.rstrip("/").endswith("/compatible-mode/v1"):
+                st.caption(
+                    "Qwen 提示：将自动改用 Responses 端点 "
+                    "…/api/v2/apps/protocols/compatible-mode/v1。"
+                )
+            device_options = ("cuda", "auto", "cpu")
+            saved_device = _preference_text(preferences, "device", "cuda")
+            device = st.selectbox(
+                "推理设备",
+                device_options,
+                index=device_options.index(saved_device) if saved_device in device_options else 0,
+            )
             if is_tiff:
                 from rsfusion_agent.tools.tiff_experiment import (
                     default_patch_size,
@@ -1233,7 +1362,9 @@ def _build_config(st: Any) -> UiRunConfig:
             st.caption(f"当前运行目录：ui_run_{st.session_state['ui_run_id']}")
 
         with st.expander("⑤ 历史运行", expanded=False):
-            _render_history_selector(st, Path(output_root), show_heading=False)
+            _render_history_selector(
+                st, Path(output_root), show_heading=False, within_configuration_form=True
+            )
 
         # Resolve repository-local resources automatically; users can still override
         # these through environment variables when launching the UI elsewhere.
@@ -1246,6 +1377,22 @@ def _build_config(st: Any) -> UiRunConfig:
         )
         knowledge_dir_text = st.text_input("本地知识库目录", value=knowledge_default)
         history_dir_text = st.text_input("历史实验目录", value=history_default)
+        apply_configuration = st.form_submit_button(
+            "应用运行配置", type="primary", use_container_width=True
+        )
+
+    if apply_configuration:
+        _save_ui_preferences(
+            repo_root,
+            {
+                "model_python": model_python,
+                "provider": provider,
+                "llm_model": llm_model,
+                "base_url": base_url,
+                "device": device,
+            },
+        )
+        st.sidebar.success("运行配置已应用；聊天记录与当前结果保持不变。")
 
     return UiRunConfig(
         request="",
@@ -1298,30 +1445,25 @@ def _default_agent_request(config: UiRunConfig) -> str:
 def _render_chat_panel(st: Any, config: UiRunConfig) -> tuple[UiRunConfig, Any]:
     """Render the conversational middle pane and reserve space for its replies."""
 
-    if "ui_chat_input" not in st.session_state:
-        st.session_state["ui_chat_input"] = _default_agent_request(config)
-    with st.container(height=960, border=True, key="chat_workspace"):
-        # This inner container owns its own scroll bar, so reviewing results on
-        # the right never moves the conversation away from its input area.
-        with st.container(height=735, key="chat_history"):
+    with st.container(height=850, border=True, key="chat_workspace"):
+        # This inner container owns its scroll bar.  The composer stays directly
+        # beneath it, matching a chat application instead of a generic form.
+        with st.container(height=460, key="chat_history", autoscroll=True):
             messages_slot = st.empty()
-        with st.form("natural_language_task_form", clear_on_submit=True):
-            request = st.text_area(
-                "输入消息",
-                height=130,
-                placeholder="例如：帮我检查输入数据；当前任务状态是什么；模拟实验的目标 HS 是什么？",
-                help="支持知识问答、状态查询、输入检查、裁剪和融合。按 Ctrl+Enter 或点击发送。",
-                key="ui_chat_input",
-            )
-            submit_task = st.form_submit_button("发送", type="primary", use_container_width=True)
-    if submit_task and request.strip():
+        request = st.chat_input(
+            "询问知识库，或描述要检查、裁剪、融合的任务…",
+            # A new key intentionally avoids carrying a stale text-area value
+            # from the previous UI implementation across a hot reload.
+            key="ui_chat_composer",
+        )
+    if isinstance(request, str) and request.strip():
         submitted_request = request.strip()
         _append_chat_turn(st, role="user", content=submitted_request)
         _append_chat_turn(st, role="assistant", content="正在理解你的任务…", pending=True)
         st.session_state["ui_pending_agent_request"] = submitted_request
         with messages_slot.container():
             _render_chat_history(st)
-    return replace(config, request=request), messages_slot
+    return replace(config, request=request or ""), messages_slot
 
 
 def _render_preflight(st: Any, payload: dict[str, Any] | None) -> None:
@@ -2057,7 +2199,7 @@ def _append_chat_turn(
 ) -> None:
     """Append to session-scoped chat history independently from run artifacts."""
 
-    turns = list(st.session_state.get("ui_chat_turns", []))
+    turns = _read_chat_turns(st)
     turns.append(
         UiChatTurn(
             role=role,
@@ -2067,7 +2209,7 @@ def _append_chat_turn(
             pending=pending,
         )
     )
-    st.session_state["ui_chat_turns"] = turns
+    _write_chat_turns(st, turns)
 
 
 def _complete_pending_chat_turn(
@@ -2075,12 +2217,12 @@ def _complete_pending_chat_turn(
 ) -> None:
     """Replace the transient assistant status with the final user-facing answer."""
 
-    turns = list(st.session_state.get("ui_chat_turns", []))
+    turns = _read_chat_turns(st)
     for index in range(len(turns) - 1, -1, -1):
         turn = turns[index]
-        if isinstance(turn, UiChatTurn) and turn.role == "assistant" and turn.pending:
+        if turn.role == "assistant" and turn.pending:
             turns[index] = replace(turn, content=content, result=result, pending=False)
-            st.session_state["ui_chat_turns"] = turns
+            _write_chat_turns(st, turns)
             return
     _append_chat_turn(st, role="assistant", content=content, result=result)
 
@@ -2088,11 +2230,7 @@ def _complete_pending_chat_turn(
 def _render_chat_history(st: Any) -> None:
     """Render conversational turns in chronological order, like a focused chat UI."""
 
-    turns = [
-        turn
-        for turn in st.session_state.get("ui_chat_turns", [])
-        if isinstance(turn, UiChatTurn)
-    ]
+    turns = _read_chat_turns(st)
     if not turns:
         st.markdown("### 开始一次融合实验")
         st.caption("在下方描述你的任务。这里会保留知识问答、任务反馈与 Agent 的自然语言回复。")
@@ -2125,6 +2263,7 @@ def _render_history_selector(
     *,
     current_output_dir: Path | None = None,
     show_heading: bool = True,
+    within_configuration_form: bool = False,
 ) -> None:
     """Render previous runs after the current result, newest first."""
 
@@ -2139,7 +2278,12 @@ def _render_history_selector(
         st.caption("暂无其他已完成的 agent_result.json。")
         return
     selected = st.selectbox("选择历史运行", history, format_func=format_history_label)
-    if st.button("加载历史结果", use_container_width=True):
+    load_history = (
+        st.form_submit_button("加载历史结果", use_container_width=True)
+        if within_configuration_form
+        else st.button("加载历史结果", use_container_width=True)
+    )
+    if load_history:
         result_path = selected.output_dir / "agent_result.json"
         result = load_json_object(result_path)
         if result is not None:
@@ -2337,6 +2481,10 @@ def _render_operation_panel(
     request_already_in_chat = isinstance(queued_request, str)
     if isinstance(queued_request, str):
         config = replace(config, request=queued_request)
+    elif direct_run_requested and not config.request.strip():
+        # The dedicated run button remains useful even when the chat composer
+        # is empty; it supplies the same explicit workflow request as before.
+        config = replace(config, request=_default_agent_request(config))
 
     if run_requested:
         if not config.request.strip():
@@ -2467,20 +2615,58 @@ def run_app() -> None:
         """
         <style>
         /* Use the available viewport instead of Streamlit's presentation-style whitespace. */
-        [data-testid="stMainBlockContainer"], .block-container {
-            max-width: none !important;
-            padding: 0.65rem 1.35rem 0.45rem !important;
+        html, body, #root,
+        [data-testid="stAppViewContainer"] {
+            height: 100% !important;
+            overflow: hidden !important;
         }
-        h1 {
-            margin-top: 0 !important;
-            margin-bottom: 0.05rem !important;
-            font-size: 2.05rem !important;
+        [data-testid="stAppViewContainer"] {
+            height: 100vh !important;
+        }
+        /* The document itself must not scroll.  The two workspaces below own
+           their scrolling through Streamlit's fixed-height containers. */
+        [data-testid="stMain"] {
+            height: 100% !important;
+            overflow: hidden !important;
+            overscroll-behavior: none;
+        }
+        [data-testid="stMainBlockContainer"] {
+            max-width: none !important;
+            height: 100% !important;
+            min-height: 0 !important;
+            box-sizing: border-box;
+            overflow: hidden !important;
+            /* Streamlit's toolbar is fixed above the document. Keep the first
+               content row below it instead of rendering the title underneath it. */
+            padding: 3.75rem 1.35rem 0.35rem !important;
+        }
+        /* A keyed Streamlit container receives this class on its own border
+           wrapper.  Its height tracks the visible viewport, rather than an
+           arbitrary pixel value or the document height. */
+        :root {
+            --rsfusion-workspace-height: clamp(32rem, calc(100dvh - 17.5rem), 58rem);
+        }
+        .st-key-chat_workspace,
+        .st-key-result_workspace {
+            height: var(--rsfusion-workspace-height) !important;
+            max-height: var(--rsfusion-workspace-height) !important;
+        }
+        .st-key-app_header {
+            box-sizing: border-box;
+            overflow: visible;
+        }
+        .st-key-app_header h2 {
+            font-size: clamp(1.5rem, 2.15vw, 2.1rem) !important;
+            line-height: 1.3 !important;
+            margin: 0 0 0.1rem !important;
+            padding: 0.1rem 0 !important;
+            overflow: visible !important;
         }
         [data-testid="stCaptionContainer"] {
             margin-bottom: 0 !important;
         }
         [data-testid="stDivider"] {
-            margin: 0.45rem 0 0.75rem !important;
+            margin: 0.35rem 0 0.65rem !important;
         }
         /* Give secondary controls a clear filled appearance instead of the default transparent look. */
         [data-testid="stButton"] > button[kind="secondary"] {
@@ -2512,8 +2698,9 @@ def run_app() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.title("RSFusionAgent · 遥感图像融合 Agent")
-    st.caption("本地运行：H5 数据与模型权重不会上传；API Key 仅从终端环境变量读取。")
+    with st.container(key="app_header"):
+        st.header("RSFusionAgent · 遥感图像融合 Agent", anchor=False)
+        st.caption("本地运行：H5 数据与模型权重不会上传；API Key 仅从终端环境变量读取。")
     st.divider()
 
     chat_column, result_column = st.columns((1.05, 1.5), gap="medium")
@@ -2522,7 +2709,7 @@ def run_app() -> None:
         config, chat_messages_slot = _render_chat_panel(st, base_config)
 
     with result_column:
-        with st.container(height=960, border=True, key="result_workspace"):
+        with st.container(height=850, border=True, key="result_workspace"):
             _render_operation_panel(st, config, chat_messages_slot=chat_messages_slot)
             st.divider()
             _render_operation_results(st, config)

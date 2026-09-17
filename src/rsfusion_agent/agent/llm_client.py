@@ -54,6 +54,25 @@ def default_model_for_provider(provider: str) -> str:
     return _DEFAULT_MODELS[normalize_provider(provider)]
 
 
+def _normalize_qwen_responses_base_url(base_url: str | None) -> str | None:
+    """Upgrade a Qwen Chat Completions URL to the Responses API endpoint.
+
+    The agent uses ``client.responses.create`` for tool calling.  On a Bailian
+    workspace, ``.../compatible-mode/v1`` is the Chat Completions endpoint;
+    sending a Responses request there returns HTTP 404.  The workspace-specific
+    Responses endpoint inserts ``/api/v2/apps/protocols`` before that suffix.
+    """
+
+    if base_url is None:
+        return None
+    normalized = base_url.rstrip("/")
+    chat_suffix = "/compatible-mode/v1"
+    responses_suffix = "/api/v2/apps/protocols/compatible-mode/v1"
+    if normalized.endswith(chat_suffix) and responses_suffix not in normalized:
+        return f"{normalized[: -len(chat_suffix)]}{responses_suffix}"
+    return normalized
+
+
 def resolve_provider_settings(
     *,
     provider: str,
@@ -73,6 +92,8 @@ def resolve_provider_settings(
         or os.environ.get("OPENAI_BASE_URL")
         or None
     )
+    if normalized_provider == "qwen":
+        resolved_base_url = _normalize_qwen_responses_base_url(resolved_base_url)
     return ProviderSettings(
         provider=normalized_provider,
         model=resolved_model,

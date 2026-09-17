@@ -193,6 +193,20 @@ def test_qwen_settings_accept_generic_environment_variables(monkeypatch: pytest.
     assert settings.base_url == "https://example.invalid/v1"
 
 
+def test_qwen_settings_upgrade_chat_url_for_responses_api() -> None:
+    settings = resolve_provider_settings(
+        provider="qwen",
+        model="qwen3.7-plus",
+        base_url="https://workspace-id.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    )
+
+    assert (
+        settings.base_url
+        == "https://workspace-id.cn-beijing.maas.aliyuncs.com/"
+        "api/v2/apps/protocols/compatible-mode/v1"
+    )
+
+
 def test_write_json_file_uses_utf8(tmp_path: Path) -> None:
     path = tmp_path / "agent_result.json"
 
