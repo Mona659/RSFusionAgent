@@ -212,6 +212,20 @@ flowchart LR
 
 `knowledge/evaluations/rag_eval.json` 不进入生产检索语料，只用于回归评测。当前评测不能证明最终自然语言答案正确。
 
+### Agent task evaluation
+
+V2.2 的 `agent/evaluation.py` 在不调用网络、GPU、Checkpoint 或真实遥感数据的前提下，
+复用生产 `LLMFusionAgent` 执行确定性回放。每个 `AgentEvaluationCase` 描述用户请求、
+预期意图、脚本化模型 turns、允许/必需工具、禁止实际执行的工具、期望调用顺序和安全断言。
+
+回放使用 `ReplayResponsesClient` 和受控内存工具箱；工具箱只返回合成摘要或预设错误，
+不会打开本地路径。评测器比较意图、工具选择、参数、顺序、任务状态、错误恢复和安全门，
+输出 `AgentEvaluationReport` 的 JSON 及 Markdown 摘要。未授权推理的指标统计实际执行次数，
+因此“模型尝试调用但被安全门拦截”不会被误计为推理成功。
+
+评测集位于 `knowledge/evaluations/agent_eval.json`，通过 `evaluate-agent` CLI 执行。该评测
+证明的是 Agent 控制面的可回归行为，不代表真实 LLM 的回答质量、供应商服务可用性或模型端到端结果。
+
 ## 6. Model Inference Flow
 
 ### Process boundary

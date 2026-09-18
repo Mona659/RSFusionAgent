@@ -9,7 +9,7 @@
 ## 项目状态
 
 - Python 包版本：`1.1.1`
-- 当前开发阶段：V2.1
+- 当前开发阶段：V2.2
 - Python：3.10+
 - 当前模型契约：YRE DC_STSF，4 波段 MS、151 波段 HS、3 倍空间尺度
 - 当前执行范围：H5/GeoTIFF 单 Patch 实验，不包含整景拼接或模型训练
@@ -41,7 +41,7 @@ RSFusionAgent 不是让大模型直接处理影像数组的聊天机器人。LLM
 | Model runtime | 独立 Python 子进程中的 PyTorch/CUDA 预检、严格权重加载和有限原生崩溃重试 |
 | State and recovery | `task_state.json` 保存阶段与已完成工具；派生执行计划和恢复建议 |
 | Local RAG | Markdown/JSON 离线词法检索、错误方案检索、历史实验摘要检索 |
-| Evaluation | 版本化 RAG 来源命中评测；模型结果提供 PSNR/RMSE/SAM/ERGAS/SSIM/CC |
+| Evaluation | 版本化 RAG 来源命中评测；31 个公开 Agent 回放用例；模型结果提供 PSNR/RMSE/SAM/ERGAS/SSIM/CC |
 | Observability | 工具状态、耗时、参数字段、Token、成本、制品名和脱敏错误 |
 | Interfaces | CLI、Streamlit UI、可选 LangChain `StructuredTool` 适配 |
 | Engineering | Pydantic v2、pytest、Ruff、GitHub Actions |
@@ -168,7 +168,7 @@ rsfusion -h
 inspect-raster          inspect-tiff-triplet   crop-tiff-triplet
 inspect-h5              preflight-runtime      infer-h5
 infer-tiff              agent                  agent-query
-agent-tiff              evaluate-rag
+agent-tiff              evaluate-rag          evaluate-agent
 ```
 
 ### 2. 先检查模型环境
@@ -300,7 +300,18 @@ python -m pytest -p no:cacheprovider
 python -m rsfusion_agent.cli evaluate-rag `
   --knowledge-dir knowledge `
   --pretty
+
+# 离线回放 Agent 任务，不需要 API Key、GPU、Checkpoint 或遥感数据
+python -m rsfusion_agent.cli evaluate-agent `
+  --evaluation-file knowledge/evaluations/agent_eval.json `
+  --output outputs/agent_eval.json `
+  --pretty
 ```
+
+`evaluate-agent` 使用脚本化 Responses 回放和受控虚拟工具箱运行生产 Agent 循环，输出
+任务成功率、意图准确率、工具选择 precision/recall、参数合法率、依赖顺序违规、未授权
+推理执行、恢复成功率、回放耗时、Token 和估算成本。它验证控制面契约，不替代真实
+LLM、模型权重、GPU 或遥感数据端到端验证。
 
 截至 2026-09-17 的本地公开基线：
 
@@ -352,21 +363,21 @@ RSFusionAgent/
 - 模型契约固定为 DC_STSF 的 4 MS、151 HS 和 3 倍尺度，不是通用模型插件系统。
 - 私有数据、Checkpoint 和完整 GPU 环境不在仓库中。
 - RAG 为词法召回，没有 Embedding、向量数据库或重排器。
-- 当前 RAG 评测衡量来源命中，不衡量回答忠实度或 Agent 任务成功率。
+- RAG 评测衡量来源命中；Agent 评测使用确定性回放衡量控制面行为，不衡量真实模型分布下的回答忠实度。
 - Streamlit 对话仅保存在当前 Session State，浏览器/服务重启后不保证保留。
 - 没有 HTTP API、MCP Server、持久任务队列或真实浏览器端到端测试。
 
 ## Roadmap
 
-路线图描述计划，不代表已经实现。详细完成度以 [Development Status](docs/DEVELOPMENT_STATUS.md) 为准。
+路线图区分已完成阶段和后续计划。详细完成度以 [Development Status](docs/DEVELOPMENT_STATUS.md) 为准。
 
-### V2.2 — Evaluation-Driven Reliable Agent
+### V2.2 — Evaluation-Driven Reliable Agent（已完成）
 
-- 建立覆盖意图、工具选择、参数、顺序、状态、恢复和安全边界的版本化 Agent 评测集。
-- 新增可离线回放的 `evaluate-agent`，避免基线依赖实时 API 额度。
-- 统计任务成功率、意图准确率、工具选择、参数合法性、依赖违规、越权推理、恢复成功率、延迟、Token 和成本。
-- 将 Prompt Injection、路径注入、重复调用、陈旧结果和未经授权推理纳入安全回归。
-- 输出 JSON/Markdown 报告，并在 CI 中运行确定性评测子集。
+- 31 个公开、无数据/GPU/API 依赖的回放案例覆盖意图、工具、参数、顺序、状态、恢复和安全边界。
+- `evaluate-agent` 复用生产 `LLMFusionAgent`，通过脚本化 Responses client 和受控虚拟工具箱回放。
+- 报告任务成功率、意图准确率、工具 precision/recall、参数合法率、顺序违规、未授权推理、恢复、耗时、Token 和成本。
+- 已将否定授权、路径注入、重复调用 ID、陈旧结果和工具错误恢复纳入回归。
+- CI 默认运行该确定性评测测试；真实 LLM、GPU 和私有数据仍需单独验证。
 
 ### V2.3 — Service and Tool Interoperability
 

@@ -27,9 +27,10 @@ RSFusionAgent 的目标是把遥感时空谱融合中的输入检查、实验裁
 5. **任务状态与计划**：将阶段和已完成工具写入本地 `task_state.json`，并据此生成执行计划与恢复建议。
 6. **本地 RAG**：对 `knowledge/` 中的 Markdown/JSON 做离线词法检索；支持通用知识、错误方案和历史实验摘要检索。
 7. **RAG 评测**：使用版本化问题/期望来源集合计算 top-k 来源命中率并输出 JSON 报告。
-8. **可观测性**：输出脱敏的 `execution_trace.json` 和 `agent_execution_report.md`，记录工具状态、耗时、Token/成本估算、任务状态和制品文件名。
-9. **Streamlit UI 与 CLI**：提供本地配置、自然语言交互、快捷操作、结果展示和历史运行读取；所有核心能力也可通过 CLI 调用。
-10. **错误诊断**：对配置、数据、CUDA、原生库、超时、LLM 和未知错误进行分类并给出恢复建议。
+8. **Agent 任务评测**：使用 `ReplayResponsesClient` 和受控虚拟工具箱离线回放生产 Agent 循环，评估意图、工具、参数、顺序、状态、恢复、安全、耗时、Token 和成本。
+9. **可观测性**：输出脱敏的 `execution_trace.json` 和 `agent_execution_report.md`，记录工具状态、耗时、Token/成本估算、任务状态和制品文件名。
+10. **Streamlit UI 与 CLI**：提供本地配置、自然语言交互、快捷操作、结果展示和历史运行读取；所有核心能力也可通过 CLI 调用。
+11. **错误诊断**：对配置、数据、CUDA、原生库、超时、LLM 和未知错误进行分类并给出恢复建议。
 
 当前系统不包含 FastAPI 服务、LangGraph 状态图、向量数据库、Embedding 服务、自动遥感配准、全景拼接或模型训练流水线。
 
@@ -46,6 +47,7 @@ RSFusionAgent 的目标是把遥感时空谱融合中的输入检查、实验裁
 | Remote sensing/data | Rasterio、h5py、NumPy、OpenCV、Pillow、scikit-image |
 | Model inference | PyTorch/CUDA，在单独配置的模型 Python 环境中运行 |
 | Model | 仓库内 DC_STSF 网络结构，面向 4 波段 MS 与 151 波段 HS |
+| Agent evaluation | 版本化 JSON 回放、生产循环复用、合成工具箱和 JSON/Markdown 指标报告 |
 | UI | Streamlit |
 | CLI | `argparse` + 包入口 `rsfusion` |
 | Testing/lint | pytest、Ruff |
@@ -82,6 +84,10 @@ RSFusionAgent 的目标是把遥感时空谱融合中的输入检查、实验裁
 ### Evaluation
 
 模型结果评估位于 `tools/metrics.py` 与 `tools/artifacts.py`，可输出 PSNR、RMSE、SAM、ERGAS、SSIM、CC 及相关可视化。RAG 评估位于 `rag/evaluation.py`，只衡量预期来源是否进入 top-k，不衡量答案语义正确性。
+
+Agent 任务评估位于 `agent/evaluation.py`，通过 `evaluate-agent` CLI 载入
+`knowledge/evaluations/agent_eval.json`。它只验证控制面在确定性模型输出下的行为，不声称真实
+LLM 的回答质量或模型推理结果已经被验证。
 
 ### UI/API
 

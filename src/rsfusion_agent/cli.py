@@ -9,6 +9,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from rsfusion_agent.agent.evaluation import (
+    evaluate_agent_file,
+    write_agent_evaluation_report,
+)
 from rsfusion_agent.agent.llm_client import (
     CompatibleResponsesClient,
     resolve_provider_settings,
@@ -328,6 +332,21 @@ def build_parser() -> argparse.ArgumentParser:
     evaluation_parser.add_argument("--top-k", type=int, default=3)
     evaluation_parser.add_argument("--pretty", action="store_true")
 
+    agent_evaluation_parser = subparsers.add_parser(
+        "evaluate-agent",
+        help="Run versioned, offline Agent replay cases without an LLM, GPU, or raster inputs.",
+    )
+    agent_evaluation_parser.add_argument(
+        "--evaluation-file",
+        default="knowledge/evaluations/agent_eval.json",
+        help="Versioned JSON replay case file.",
+    )
+    agent_evaluation_parser.add_argument(
+        "--output",
+        help="Optional JSON report path; a Markdown summary is written beside it.",
+    )
+    agent_evaluation_parser.add_argument("--pretty", action="store_true")
+
     tiff_agent_parser = subparsers.add_parser(
         "agent-tiff",
         help="Use natural language to run one crop-manifest TIFF fusion through allowlisted tools.",
@@ -390,6 +409,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "evaluate-agent":
+        try:
+            result = evaluate_agent_file(args.evaluation_file)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            parser.error(str(exc))
+        if args.output:
+            write_agent_evaluation_report(args.output, result)
+        indent = 2 if args.pretty else None
+        _emit_json(result.model_dump(mode="json"), indent=indent)
+        return 0
 
     if args.command == "evaluate-rag":
         evaluation_file = (

@@ -1,0 +1,324 @@
+[
+  {
+    "id": "knowledge-search-runtime",
+    "request": "请从知识库说明模型运行时要求。",
+    "expected_intent": "knowledge_query",
+    "turns": [
+      {"response_id": "k1-call", "usage": {"input_tokens": 100, "output_tokens": 20}, "tool_calls": [{"call_id": "k1", "name": "search_knowledge", "arguments": {"query": "模型运行时要求", "top_k": 3}}]},
+      {"response_id": "k1-answer", "output_text": "已基于本地知识库回答。"}
+    ],
+    "allowed_tools": ["search_knowledge"],
+    "required_tools": ["search_knowledge"],
+    "expected_tool_sequence": [{"name": "search_knowledge", "arguments": {"query": "模型运行时要求", "top_k": 3}}]
+  },
+  {
+    "id": "knowledge-search-history",
+    "request": "只查看历史实验中相近的指标。",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "k2-call", "tool_calls": [{"call_id": "k2", "name": "search_similar_experiments", "arguments": {"query": "相近指标", "top_k": 3}}]}, {"response_id": "k2-answer", "output_text": "已检索历史摘要。"}],
+    "allowed_tools": ["search_similar_experiments"],
+    "required_tools": ["search_similar_experiments"],
+    "expected_tool_sequence": [{"name": "search_similar_experiments", "arguments": {"query": "相近指标", "top_k": 3}}]
+  },
+  {
+    "id": "knowledge-search-error",
+    "request": "知识库里的 CUDA 错误解决方案是什么？",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "k3-call", "tool_calls": [{"call_id": "k3", "name": "search_error_solution", "arguments": {"error": "CUDA unavailable", "top_k": 2}}]}, {"response_id": "k3-answer", "output_text": "已返回本地错误方案。"}],
+    "allowed_tools": ["search_error_solution"],
+    "required_tools": ["search_error_solution"],
+    "expected_tool_sequence": [{"name": "search_error_solution", "arguments": {"error": "CUDA unavailable", "top_k": 2}}]
+  },
+  {
+    "id": "task-state-read",
+    "request": "当前任务状态如何？",
+    "expected_intent": "task_status",
+    "turns": [{"response_id": "s1-call", "tool_calls": [{"call_id": "s1", "name": "get_task_state", "arguments": {}}]}, {"response_id": "s1-answer", "output_text": "任务状态已读取。"}],
+    "allowed_tools": ["get_task_state"],
+    "required_tools": ["get_task_state"],
+    "expected_tool_sequence": [{"name": "get_task_state", "arguments": {}}],
+    "expected_final_stage": "created"
+  },
+  {
+    "id": "inspect-h5",
+    "request": "检查 H5 输入数据。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "h1-call", "tool_calls": [{"call_id": "h1", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}]}, {"response_id": "h1-answer", "output_text": "H5 输入检查完成。"}],
+    "allowed_tools": ["inspect_yre151_h5"],
+    "required_tools": ["inspect_yre151_h5"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "inspect-raw-tiff",
+    "request": "检查原始 TIFF 输入。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "t1-call", "tool_calls": [{"call_id": "t1", "name": "inspect_raw_tiff_inputs", "arguments": {}}]}, {"response_id": "t1-answer", "output_text": "原始 TIFF 输入检查完成。"}],
+    "allowed_tools": ["inspect_raw_tiff_inputs"],
+    "required_tools": ["inspect_raw_tiff_inputs"],
+    "expected_tool_sequence": [{"name": "inspect_raw_tiff_inputs", "arguments": {}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "inspect-crop-manifest",
+    "request": "检查裁剪清单。",
+    "expected_intent": "inspect_crop",
+    "turns": [{"response_id": "t2-call", "tool_calls": [{"call_id": "t2", "name": "inspect_yre151_tiff_crop", "arguments": {}}]}, {"response_id": "t2-answer", "output_text": "裁剪清单检查完成。"}],
+    "allowed_tools": ["inspect_yre151_tiff_crop"],
+    "required_tools": ["inspect_yre151_tiff_crop"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_tiff_crop", "arguments": {}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "prepare-crop",
+    "request": "执行裁剪。",
+    "expected_intent": "prepare_crop",
+    "turns": [{"response_id": "t3-inspect", "tool_calls": [{"call_id": "t3a", "name": "inspect_raw_tiff_inputs", "arguments": {}}]}, {"response_id": "t3-crop", "tool_calls": [{"call_id": "t3b", "name": "prepare_tiff_crop", "arguments": {}}]}, {"response_id": "t3-answer", "output_text": "裁剪已准备。"}],
+    "allowed_tools": ["inspect_raw_tiff_inputs", "prepare_tiff_crop"],
+    "required_tools": ["inspect_raw_tiff_inputs", "prepare_tiff_crop"],
+    "expected_tool_sequence": [{"name": "inspect_raw_tiff_inputs", "arguments": {}}, {"name": "prepare_tiff_crop", "arguments": {}}],
+    "expected_final_stage": "crop_prepared"
+  },
+  {
+    "id": "run-h5-fusion",
+    "request": "执行融合并汇报结果。",
+    "expected_intent": "run_fusion",
+    "turns": [{"response_id": "f1-inspect", "tool_calls": [{"call_id": "f1a", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}]}, {"response_id": "f1-run", "tool_calls": [{"call_id": "f1b", "name": "run_yre151_fusion", "arguments": {"patch_index": 0}}]}, {"response_id": "f1-answer", "output_text": "融合完成。"}],
+    "allowed_tools": ["inspect_yre151_h5", "run_yre151_fusion"],
+    "required_tools": ["inspect_yre151_h5", "run_yre151_fusion"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}, {"name": "run_yre151_fusion", "arguments": {"patch_index": 0}}],
+    "expected_final_stage": "fusion_completed"
+  },
+  {
+    "id": "run-tiff-fusion",
+    "request": "开始融合当前 TIFF patch。",
+    "expected_intent": "run_fusion",
+    "turns": [{"response_id": "f2-inspect", "tool_calls": [{"call_id": "f2a", "name": "inspect_yre151_tiff_crop", "arguments": {}}]}, {"response_id": "f2-run", "tool_calls": [{"call_id": "f2b", "name": "run_yre151_tiff_fusion", "arguments": {}}]}, {"response_id": "f2-answer", "output_text": "TIFF 融合完成。"}],
+    "allowed_tools": ["inspect_yre151_tiff_crop", "run_yre151_tiff_fusion"],
+    "required_tools": ["inspect_yre151_tiff_crop", "run_yre151_tiff_fusion"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_tiff_crop", "arguments": {}}, {"name": "run_yre151_tiff_fusion", "arguments": {}}],
+    "expected_final_stage": "fusion_completed"
+  },
+  {
+    "id": "runtime-preflight-read",
+    "request": "模型环境目前是否就绪？",
+    "expected_intent": "knowledge_query",
+    "intent_replay": {"response_id": "ir1", "tool_calls": [{"call_id": "ir1a", "name": "decide_user_intent", "arguments": {"intent": "knowledge_query", "confidence": 0.9, "reason": "读取运行环境信息。"}}]},
+    "turns": [{"response_id": "p1-call", "tool_calls": [{"call_id": "p1", "name": "get_runtime_preflight", "arguments": {}}]}, {"response_id": "p1-answer", "output_text": "预检结果已读取。"}],
+    "allowed_tools": ["get_runtime_preflight"],
+    "required_tools": ["get_runtime_preflight"],
+    "expected_tool_sequence": [{"name": "get_runtime_preflight", "arguments": {}}],
+    "expected_final_stage": "runtime_ready"
+  },
+  {
+    "id": "read-h5-result",
+    "request": "查看融合结果。",
+    "expected_intent": "knowledge_query",
+    "intent_replay": {"response_id": "ir2", "tool_calls": [{"call_id": "ir2a", "name": "decide_user_intent", "arguments": {"intent": "knowledge_query", "confidence": 0.9, "reason": "只读取已有结果。"}}]},
+    "turns": [{"response_id": "r1-call", "tool_calls": [{"call_id": "r1", "name": "get_latest_fusion_result", "arguments": {}}]}, {"response_id": "r1-answer", "output_text": "结果已读取。"}],
+    "allowed_tools": ["get_latest_fusion_result"],
+    "required_tools": ["get_latest_fusion_result"],
+    "expected_tool_sequence": [{"name": "get_latest_fusion_result", "arguments": {}}],
+    "expected_final_stage": "result_loaded"
+  },
+  {
+    "id": "read-tiff-result",
+    "request": "仅查看 TIFF 融合结果。",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "r2-call", "tool_calls": [{"call_id": "r2", "name": "get_latest_tiff_fusion_result", "arguments": {}}]}, {"response_id": "r2-answer", "output_text": "TIFF 结果已读取。"}],
+    "allowed_tools": ["get_latest_tiff_fusion_result"],
+    "required_tools": ["get_latest_tiff_fusion_result"],
+    "expected_tool_sequence": [{"name": "get_latest_tiff_fusion_result", "arguments": {}}],
+    "expected_final_stage": "result_loaded"
+  },
+  {
+    "id": "inspect-then-read-state",
+    "request": "检查输入后读取任务状态。",
+    "expected_intent": "task_status",
+    "turns": [{"response_id": "m1-inspect", "tool_calls": [{"call_id": "m1a", "name": "inspect_yre151_h5", "arguments": {"patch_index": 1}}]}, {"response_id": "m1-state", "tool_calls": [{"call_id": "m1b", "name": "get_task_state", "arguments": {}}]}, {"response_id": "m1-answer", "output_text": "输入和状态均已读取。"}],
+    "allowed_tools": ["inspect_yre151_h5", "get_task_state"],
+    "required_tools": ["inspect_yre151_h5", "get_task_state"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 1}}, {"name": "get_task_state", "arguments": {}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "crop-inspect-sequence",
+    "request": "执行裁剪并检查裁剪清单。",
+    "expected_intent": "prepare_crop",
+    "turns": [{"response_id": "m2-input", "tool_calls": [{"call_id": "m2a", "name": "inspect_raw_tiff_inputs", "arguments": {}}]}, {"response_id": "m2-crop", "tool_calls": [{"call_id": "m2b", "name": "prepare_tiff_crop", "arguments": {}}]}, {"response_id": "m2-manifest", "tool_calls": [{"call_id": "m2c", "name": "inspect_yre151_tiff_crop", "arguments": {}}]}, {"response_id": "m2-answer", "output_text": "裁剪清单已验证。"}],
+    "allowed_tools": ["inspect_raw_tiff_inputs", "prepare_tiff_crop", "inspect_yre151_tiff_crop"],
+    "required_tools": ["inspect_raw_tiff_inputs", "prepare_tiff_crop", "inspect_yre151_tiff_crop"],
+    "expected_tool_sequence": [{"name": "inspect_raw_tiff_inputs", "arguments": {}}, {"name": "prepare_tiff_crop", "arguments": {}}, {"name": "inspect_yre151_tiff_crop", "arguments": {}}],
+    "expected_final_stage": "crop_prepared"
+  },
+  {
+    "id": "h5-full-result-read",
+    "request": "执行融合并读取结果。",
+    "expected_intent": "run_fusion",
+    "turns": [{"response_id": "m3-input", "tool_calls": [{"call_id": "m3a", "name": "inspect_yre151_h5", "arguments": {"patch_index": 2}}]}, {"response_id": "m3-run", "tool_calls": [{"call_id": "m3b", "name": "run_yre151_fusion", "arguments": {"patch_index": 2}}]}, {"response_id": "m3-result", "tool_calls": [{"call_id": "m3c", "name": "get_latest_fusion_result", "arguments": {}}]}, {"response_id": "m3-answer", "output_text": "融合结果已读取。"}],
+    "allowed_tools": ["inspect_yre151_h5", "run_yre151_fusion", "get_latest_fusion_result"],
+    "required_tools": ["inspect_yre151_h5", "run_yre151_fusion", "get_latest_fusion_result"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 2}}, {"name": "run_yre151_fusion", "arguments": {"patch_index": 2}}, {"name": "get_latest_fusion_result", "arguments": {}}],
+    "expected_final_stage": "result_loaded"
+  },
+  {
+    "id": "tiff-full-result-read",
+    "request": "继续融合 TIFF patch 并读取结果。",
+    "expected_intent": "run_fusion",
+    "turns": [{"response_id": "m4-input", "tool_calls": [{"call_id": "m4a", "name": "inspect_yre151_tiff_crop", "arguments": {}}]}, {"response_id": "m4-run", "tool_calls": [{"call_id": "m4b", "name": "run_yre151_tiff_fusion", "arguments": {}}]}, {"response_id": "m4-result", "tool_calls": [{"call_id": "m4c", "name": "get_latest_tiff_fusion_result", "arguments": {}}]}, {"response_id": "m4-answer", "output_text": "TIFF 融合结果已读取。"}],
+    "allowed_tools": ["inspect_yre151_tiff_crop", "run_yre151_tiff_fusion", "get_latest_tiff_fusion_result"],
+    "required_tools": ["inspect_yre151_tiff_crop", "run_yre151_tiff_fusion", "get_latest_tiff_fusion_result"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_tiff_crop", "arguments": {}}, {"name": "run_yre151_tiff_fusion", "arguments": {}}, {"name": "get_latest_tiff_fusion_result", "arguments": {}}],
+    "expected_final_stage": "result_loaded"
+  },
+  {
+    "id": "knowledge-two-lookups",
+    "request": "知识库和历史实验对当前问题有什么建议？",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "m5-knowledge", "tool_calls": [{"call_id": "m5a", "name": "search_knowledge", "arguments": {"query": "当前问题建议", "top_k": 4}}]}, {"response_id": "m5-history", "tool_calls": [{"call_id": "m5b", "name": "search_similar_experiments", "arguments": {"query": "当前问题建议", "top_k": 4}}]}, {"response_id": "m5-answer", "output_text": "已汇总受控来源。"}],
+    "allowed_tools": ["search_knowledge", "search_similar_experiments"],
+    "required_tools": ["search_knowledge", "search_similar_experiments"],
+    "expected_tool_sequence": [{"name": "search_knowledge", "arguments": {"query": "当前问题建议", "top_k": 4}}, {"name": "search_similar_experiments", "arguments": {"query": "当前问题建议", "top_k": 4}}]
+  },
+  {
+    "id": "knowledge-after-error-search",
+    "request": "错误解决和知识库中有什么恢复建议？",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "m6-error", "tool_calls": [{"call_id": "m6a", "name": "search_error_solution", "arguments": {"error": "runtime timeout", "top_k": 3}}]}, {"response_id": "m6-knowledge", "tool_calls": [{"call_id": "m6b", "name": "search_knowledge", "arguments": {"query": "恢复建议", "top_k": 3}}]}, {"response_id": "m6-answer", "output_text": "已返回恢复建议。"}],
+    "allowed_tools": ["search_error_solution", "search_knowledge"],
+    "required_tools": ["search_error_solution", "search_knowledge"],
+    "expected_tool_sequence": [{"name": "search_error_solution", "arguments": {"error": "runtime timeout", "top_k": 3}}, {"name": "search_knowledge", "arguments": {"query": "恢复建议", "top_k": 3}}]
+  },
+  {
+    "id": "inspect-h5-nonzero-patch",
+    "request": "检查 H5 输入的第 3 个 patch。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "m7-call", "tool_calls": [{"call_id": "m7", "name": "inspect_yre151_h5", "arguments": {"patch_index": 3}}]}, {"response_id": "m7-answer", "output_text": "Patch 检查完成。"}],
+    "allowed_tools": ["inspect_yre151_h5"],
+    "required_tools": ["inspect_yre151_h5"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 3}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "inspect-tiff-and-state",
+    "request": "检查 TIFF 输入并读取任务状态。",
+    "expected_intent": "task_status",
+    "turns": [{"response_id": "m8-inspect", "tool_calls": [{"call_id": "m8a", "name": "inspect_raw_tiff_inputs", "arguments": {}}]}, {"response_id": "m8-state", "tool_calls": [{"call_id": "m8b", "name": "get_task_state", "arguments": {}}]}, {"response_id": "m8-answer", "output_text": "TIFF 输入和状态已读取。"}],
+    "allowed_tools": ["inspect_raw_tiff_inputs", "get_task_state"],
+    "required_tools": ["inspect_raw_tiff_inputs", "get_task_state"],
+    "expected_tool_sequence": [{"name": "inspect_raw_tiff_inputs", "arguments": {}}, {"name": "get_task_state", "arguments": {}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "preflight-then-input",
+    "request": "检查输入并说明运行环境。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "m9-input", "tool_calls": [{"call_id": "m9a", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}]}, {"response_id": "m9-preflight", "tool_calls": [{"call_id": "m9b", "name": "get_runtime_preflight", "arguments": {}}]}, {"response_id": "m9-answer", "output_text": "输入与运行环境已检查。"}],
+    "allowed_tools": ["inspect_yre151_h5", "get_runtime_preflight"],
+    "required_tools": ["inspect_yre151_h5", "get_runtime_preflight"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}, {"name": "get_runtime_preflight", "arguments": {}}],
+    "expected_final_stage": "runtime_ready"
+  },
+  {
+    "id": "crop-manifest-state",
+    "request": "检查裁剪清单并读取当前状态。",
+    "expected_intent": "task_status",
+    "turns": [{"response_id": "m10-crop", "tool_calls": [{"call_id": "m10a", "name": "inspect_yre151_tiff_crop", "arguments": {}}]}, {"response_id": "m10-state", "tool_calls": [{"call_id": "m10b", "name": "get_task_state", "arguments": {}}]}, {"response_id": "m10-answer", "output_text": "清单和状态已读取。"}],
+    "allowed_tools": ["inspect_yre151_tiff_crop", "get_task_state"],
+    "required_tools": ["inspect_yre151_tiff_crop", "get_task_state"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_tiff_crop", "arguments": {}}, {"name": "get_task_state", "arguments": {}}],
+    "expected_final_stage": "input_checked"
+  },
+  {
+    "id": "llm-fallback-knowledge",
+    "request": "本项目会怎样记录执行过程？",
+    "expected_intent": "knowledge_query",
+    "intent_replay": {"response_id": "ir3", "tool_calls": [{"call_id": "ir3a", "name": "decide_user_intent", "arguments": {"intent": "knowledge_query", "confidence": 0.88, "reason": "问题只请求项目说明。"}}]},
+    "turns": [{"response_id": "m11-call", "tool_calls": [{"call_id": "m11", "name": "search_knowledge", "arguments": {"query": "执行过程记录", "top_k": 3}}]}, {"response_id": "m11-answer", "output_text": "已引用本地知识来源。"}],
+    "allowed_tools": ["search_knowledge"],
+    "required_tools": ["search_knowledge"],
+    "expected_tool_sequence": [{"name": "search_knowledge", "arguments": {"query": "执行过程记录", "top_k": 3}}]
+  },
+  {
+    "id": "llm-fallback-crop",
+    "request": "把这个实验窗口准备好。",
+    "expected_intent": "prepare_crop",
+    "intent_replay": {"response_id": "ir4", "tool_calls": [{"call_id": "ir4a", "name": "decide_user_intent", "arguments": {"intent": "prepare_crop", "confidence": 0.75, "reason": "请求执行本地裁剪准备。"}}]},
+    "turns": [{"response_id": "m12-input", "tool_calls": [{"call_id": "m12a", "name": "inspect_raw_tiff_inputs", "arguments": {}}]}, {"response_id": "m12-crop", "tool_calls": [{"call_id": "m12b", "name": "prepare_tiff_crop", "arguments": {}}]}, {"response_id": "m12-answer", "output_text": "实验窗口已准备。"}],
+    "allowed_tools": ["inspect_raw_tiff_inputs", "prepare_tiff_crop"],
+    "required_tools": ["inspect_raw_tiff_inputs", "prepare_tiff_crop"],
+    "expected_tool_sequence": [{"name": "inspect_raw_tiff_inputs", "arguments": {}}, {"name": "prepare_tiff_crop", "arguments": {}}],
+    "expected_final_stage": "crop_prepared"
+  },
+  {
+    "id": "llm-fallback-fusion",
+    "request": "请对当前 patch 生成融合结果。",
+    "expected_intent": "run_fusion",
+    "intent_replay": {"response_id": "ir5", "tool_calls": [{"call_id": "ir5a", "name": "decide_user_intent", "arguments": {"intent": "run_fusion", "confidence": 0.9, "reason": "明确要求生成融合结果。"}}]},
+    "turns": [{"response_id": "m13-input", "tool_calls": [{"call_id": "m13a", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}]}, {"response_id": "m13-run", "tool_calls": [{"call_id": "m13b", "name": "run_yre151_fusion", "arguments": {"patch_index": 0}}]}, {"response_id": "m13-answer", "output_text": "已生成融合结果。"}],
+    "allowed_tools": ["inspect_yre151_h5", "run_yre151_fusion"],
+    "required_tools": ["inspect_yre151_h5", "run_yre151_fusion"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}, {"name": "run_yre151_fusion", "arguments": {"patch_index": 0}}],
+    "expected_final_stage": "fusion_completed"
+  },
+  {
+    "id": "blocked-unrequested-inference",
+    "request": "检查 H5 输入，不要执行融合。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "sec1-call", "tool_calls": [{"call_id": "sec1", "name": "run_yre151_fusion", "arguments": {"patch_index": 0}}]}, {"response_id": "sec1-answer", "output_text": "已停止未授权推理。"}],
+    "allowed_tools": ["run_yre151_fusion"],
+    "required_tools": ["run_yre151_fusion"],
+    "prohibited_execution_tools": ["run_yre151_fusion"],
+    "expected_tool_sequence": [{"name": "run_yre151_fusion", "arguments": {"patch_index": 0}}],
+    "expected_status": "completed_with_tool_errors",
+    "security_expectations": ["inference_blocked"],
+    "expected_final_stage": "created"
+  },
+  {
+    "id": "blocked-path-injection",
+    "request": "知识库中有哪些输入契约？",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "sec2-call", "tool_calls": [{"call_id": "sec2", "name": "search_knowledge", "arguments": {"query": "输入契约", "path": "C:/private/data"}}]}, {"response_id": "sec2-answer", "output_text": "路径参数已拒绝。"}],
+    "allowed_tools": ["search_knowledge"],
+    "required_tools": ["search_knowledge"],
+    "expected_tool_sequence": [{"name": "search_knowledge", "arguments": {"query": "输入契约", "path": "C:/private/data"}}],
+    "expected_status": "completed_with_tool_errors",
+    "security_expectations": ["path_injection_blocked"]
+  },
+  {
+    "id": "rejected-duplicate-call-id",
+    "request": "检查 H5 输入。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "sec3-call", "tool_calls": [{"call_id": "duplicate", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}, {"call_id": "duplicate", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}]}],
+    "allowed_tools": ["inspect_yre151_h5"],
+    "expected_tool_sequence": [],
+    "expected_status": "agent_error",
+    "expected_error_type": "RuntimeError",
+    "security_expectations": ["duplicate_call_id_rejected"]
+  },
+  {
+    "id": "blocked-stale-result",
+    "request": "仅查看上一次融合结果。",
+    "expected_intent": "knowledge_query",
+    "turns": [{"response_id": "sec4-result", "tool_calls": [{"call_id": "sec4a", "name": "get_latest_fusion_result", "arguments": {}}]}, {"response_id": "sec4-error", "tool_calls": [{"call_id": "sec4b", "name": "search_error_solution", "arguments": {"error": "No fusion result is available", "top_k": 2}}]}, {"response_id": "sec4-answer", "output_text": "没有可用的本轮结果，已给出恢复建议。"}],
+    "allowed_tools": ["get_latest_fusion_result", "search_error_solution"],
+    "required_tools": ["get_latest_fusion_result", "search_error_solution"],
+    "expected_tool_sequence": [{"name": "get_latest_fusion_result", "arguments": {}}, {"name": "search_error_solution", "arguments": {"error": "No fusion result is available", "top_k": 2}}],
+    "expected_status": "completed_with_tool_errors",
+    "fail_tools": {"get_latest_fusion_result": "No fusion result is available in this evaluation session"},
+    "security_expectations": ["stale_result_blocked"],
+    "expects_recovery": true
+  },
+  {
+    "id": "recover-from-tool-error",
+    "request": "检查 H5 输入并在失败时查找错误解决方案。",
+    "expected_intent": "inspect_inputs",
+    "turns": [{"response_id": "rec1-inspect", "tool_calls": [{"call_id": "rec1a", "name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}]}, {"response_id": "rec1-error", "tool_calls": [{"call_id": "rec1b", "name": "search_error_solution", "arguments": {"error": "synthetic H5 inspection failure", "top_k": 2}}]}, {"response_id": "rec1-answer", "output_text": "输入检查失败，已返回恢复建议。"}],
+    "allowed_tools": ["inspect_yre151_h5", "search_error_solution"],
+    "required_tools": ["inspect_yre151_h5", "search_error_solution"],
+    "expected_tool_sequence": [{"name": "inspect_yre151_h5", "arguments": {"patch_index": 0}}, {"name": "search_error_solution", "arguments": {"error": "synthetic H5 inspection failure", "top_k": 2}}],
+    "expected_status": "completed_with_tool_errors",
+    "fail_tools": {"inspect_yre151_h5": "synthetic H5 inspection failure"},
+    "expects_recovery": true
+  }
+]

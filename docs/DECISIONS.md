@@ -291,9 +291,26 @@ CLI 统一写入结构化 JSON，UI 以只读方式载入历史结果，恢复�
 **Constraint**
 新增模型实现或权重时必须明确其许可归属。不得删除模型排除说明、把 DC_STSF 文件纳入 Apache-2.0，或在未取得书面许可时使用、修改、再分发模型材料。未来打包或发布 Python 分发物时必须保留两份许可证说明。
 
+## D-018 — Evaluate the production Agent loop with deterministic offline replay
+
+**Decision**
+V2.2 使用脚本化 Responses 回放和受控虚拟工具箱评估生产 `LLMFusionAgent`，不在基线评测中调用真实 LLM、GPU、Checkpoint 或遥感数据。
+
+**Context**
+真实供应商响应、私有模型和数据不可作为公开 CI 的稳定依赖；仅测试工具函数也无法证明意图、调用顺序、授权和错误恢复的组合行为。
+
+**Reason**
+复用真实 Agent 循环可以覆盖控制面契约，同时通过合成工具结果保持公开、快速、可复现。该边界不会把回放通过误解释为真实模型质量通过。
+
+**Current Implementation**
+`agent/evaluation.py` 提供 `ReplayResponsesClient`、版本化 Pydantic Schema、任务/安全指标和 JSON/Markdown 报告；`knowledge/evaluations/agent_eval.json` 提供 31 个公开用例；`evaluate-agent` 是对应 CLI 入口。
+
+**Constraint**
+评测工具箱不得读取任意路径或执行真实推理。新增用例必须明确预期意图、允许/必需工具、参数、顺序、状态和安全断言。真实 LLM、GPU、Checkpoint 和遥感数据仍需独立端到端验证。
+
 ## Items Requiring Confirmation
 
-已确认：Python 包正式版本为 `1.1.1`，当前项目开发版本为 V2.1；四份未跟踪开发计划/总结只保存在本地；“长期记忆”仅指当前本地历史实验检索；DC_STSF 是作者个人算法且尚未开源。
+已确认：Python 包正式版本为 `1.1.1`，当前项目开发版本为 V2.2；四份未跟踪开发计划/总结只保存在本地；“长期记忆”仅指当前本地历史实验检索；DC_STSF 是作者个人算法且尚未开源。
 
 仍需确认：
 

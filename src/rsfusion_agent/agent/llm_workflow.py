@@ -55,6 +55,26 @@ def _explicitly_requests_inference(request: str) -> bool:
     """Keep an RGB/input-inspection request from silently becoming a costly model run."""
 
     normalized = request.lower()
+    if any(
+        phrase in normalized
+        for phrase in (
+            "不要执行融合",
+            "不执行融合",
+            "无需执行融合",
+            "不用执行融合",
+            "不要融合",
+            "不运行融合",
+            "不要执行推理",
+            "不执行推理",
+            "不要推理",
+            "仅检查",
+            "只检查",
+            "do not fuse",
+            "don't fuse",
+            "without fusion",
+        )
+    ):
+        return False
     return any(
         keyword in normalized
         for keyword in ("融合", "推理", "inference", "infer", "运行模型", "执行模型", "测试当前patch")

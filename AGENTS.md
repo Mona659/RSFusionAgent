@@ -20,7 +20,7 @@ RSFusionAgent/
 │   ├── tools/       # H5/TIFF、裁剪、指标、制品、运行时桥接等确定性工具
 │   ├── ui/          # Streamlit UI
 │   └── cli.py       # 所有 CLI 子命令的统一入口
-├── knowledge/       # 受控本地知识库与 RAG 评测集
+├── knowledge/       # 受控本地知识库与 RAG/Agent 评测集
 ├── tests/           # 单元/集成级自动化测试
 ├── docs/            # 使用、架构、状态和历史文档
 ├── scripts/         # 离线恢复等辅助脚本
@@ -68,6 +68,7 @@ RSFusionAgent/
 | --- | --- |
 | `src/rsfusion_agent/cli.py` | CLI 参数、上下文组装、Agent/工作流入口、结果写入 |
 | `src/rsfusion_agent/agent/llm_workflow.py` | 有界 Function Calling Agent 循环与系统提示词 |
+| `src/rsfusion_agent/agent/evaluation.py` | 离线 Agent 回放、任务级指标和安全回归 |
 | `src/rsfusion_agent/agent/llm_tools.py` | 三类工具箱、工具 Schema、前置条件和本地授权边界 |
 | `src/rsfusion_agent/agent/intent_router.py` | 规则优先、LLM 回退的意图识别 |
 | `src/rsfusion_agent/agent/task_state.py` | 持久化轻量任务阶段与已完成工具集合 |
@@ -79,7 +80,7 @@ RSFusionAgent/
 | `src/rsfusion_agent/runtime/*.py` | PyTorch/CUDA 环境预检和实际推理进程 |
 | `src/rsfusion_agent/rag/` | 本地知识、错误、历史检索与 RAG 评测 |
 | `src/rsfusion_agent/ui/streamlit_app.py` | Streamlit 配置、会话、子进程执行和结果渲染 |
-| `knowledge/` | 受控知识源与 RAG 评测用例 |
+| `knowledge/` | 受控知识源与 RAG/Agent 评测用例 |
 | `tests/` | 当前行为契约的主要可执行证据 |
 | `pyproject.toml` | 依赖、可选 extras、入口点、Ruff 配置和包版本 |
 | `.github/workflows/ci.yml` | Python 3.10 下 Ruff 与 pytest 的 CI 基线 |
@@ -100,6 +101,7 @@ RSFusionAgent/
 - 每次代码修改至少运行与改动模块直接相关的测试。
 - 涉及 Agent、工具 Schema、状态、CLI 或公共数据模型时，应运行完整测试套件。
 - 涉及导入、格式或 CI 时，应同时运行 Ruff。
+- 涉及 Agent 控制循环、意图授权或评测时，应运行 `evaluate-agent` 回放和完整 pytest。
 - UI 改动至少运行 `tests/test_streamlit_ui.py`，但要明确它只覆盖辅助逻辑，不等价于真实浏览器/响应式布局测试。
 - GPU/Checkpoint/TIFF 私有数据端到端测试依赖本地资源；无法运行时必须明确说明未验证的边界。
 - 不得为了让测试通过而删除断言、降低关键前置条件或伪造实际推理成功。
@@ -153,6 +155,7 @@ git diff
 - `src/rsfusion_agent/agent/llm_state.py`、`agent/state.py`：JSON 制品和 UI/CLI 消费的公共 Schema。
 - `src/rsfusion_agent/cli.py`：公开命令及参数兼容性。
 - `knowledge/evaluations/rag_eval.json`：RAG 回归基线；变更必须说明评测含义。
+- `knowledge/evaluations/agent_eval.json`：Agent 控制面回放基线；变更必须说明指标和安全含义。
 - `.github/workflows/ci.yml`、`pyproject.toml`：CI/依赖基线。
 
 ## 11. Known Constraints

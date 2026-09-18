@@ -2,7 +2,7 @@
 
 本文件记录当前仓库做到哪里。判定优先级为：当前代码与测试 > 当前配置 > 已跟踪文档 > Git 历史 > 未跟踪历史总结。这里的“完成”表示代码和相应自动化证据已存在，不代表所有真实数据、GPU、浏览器和外部供应商组合都已验证。
 
-审查基线：`main` 分支，提交 `dc8182b`（2026-09-17）。
+V2.2 开发基线：`main` 分支提交 `c62a28a`（2026-09-17）；当前 Git HEAD 以实际仓库状态为准。
 
 ## Completed
 
@@ -41,9 +41,10 @@
 - Streamlit 本地 UI：输入配置、自然语言请求、快捷操作、结果展示、当前会话对话、历史本地结果读取和非秘密偏好保存。
 - 旧结果修改时间检查，防止本轮失败时展示上轮 `agent_result.json`。
 - Ruff、pytest 和 GitHub Actions Python 3.10 CI 配置。
-- 20 个测试模块覆盖 Agent、工具、状态、计划、RAG、可观测性、H5/TIFF、指标、运行时桥接和 UI 辅助逻辑。
-- 公开 README 已按 V2.1 实际能力重写，明确区分已实现功能、私有验证、限制与 V2.2/V2.3 路线图。
+- 21 个测试模块覆盖 Agent、工具、状态、计划、RAG、Agent 回放评测、可观测性、H5/TIFF、指标、运行时桥接和 UI 辅助逻辑。
+- 公开 README 已按 V2.2 实际能力同步，明确区分已实现功能、私有验证、限制与 V2.3 路线图。
 - 应用/工具等代码采用 Apache-2.0；DC_STSF 模型源码及相关权重通过 `MODEL_LICENSE.md` 明确排除。
+- V2.2 Agent 任务级评测已实现：31 个公开回放用例、`evaluate-agent` CLI、JSON/Markdown 报告和安全回归。
 
 ## In Progress
 
@@ -52,7 +53,7 @@
 1. **Streamlit 交互与布局**：最近两个提交集中修改配置持久化、对话区和页面布局。辅助逻辑有 pytest 覆盖，但没有真实浏览器端到端/响应式布局测试。当前用户已要求暂时忽略布局问题，因此本轮不修改 UI。
 2. **LLM 供应商配置兼容**：Qwen Responses 端点和模型配置刚在 `dc8182b` 调整。客户端逻辑和测试存在，但外部模型可用性、免费额度、实际模型 ID 和服务端错误取决于用户账户与供应商，仓库无法保证。
 3. **旧技术文档同步**：公开 README 已统一表达 Python 包版本 `1.1.1` 与项目开发阶段 V2.1，并按实际代码更新工具、状态、RAG 和 TIFF 能力。`docs/data_contract.md`、`docs/llm_agent.md` 和部分源码 docstring 仍保留早期表述，后续应单独同步。
-4. **下一阶段评测设计**：V2.2 已确定以 Agent 任务级评测和可回放回归为核心，但评测 Schema、用例集、CLI 和指标实现尚未进入代码。
+4. **真实模型评测边界**：V2.2 回放评测已完成，但它不替代真实 LLM、供应商 API、GPU、Checkpoint 或遥感数据端到端验证。
 
 ## Pending
 
@@ -63,7 +64,6 @@
 - 整景滑窗推理、重叠加权和 Mosaic 导出。
 - 通用模型选择/多模型适配。当前只有内置 YRE DC_STSF 运行时契约。
 - 对 `docs/data_contract.md`、`docs/llm_agent.md` 和过时 TIFF docstring 做不改变业务逻辑的内容同步。
-- V2.2 Agent 任务级评测：意图、工具选择、参数、调用顺序、状态、恢复、安全、延迟和成本。
 - V2.3 服务与工具互操作：FastAPI、SSE、SQLite 任务持久化、MCP 和轻量控制面容器化。
 
 注意：`docs/v1_release.md` 还把实验检索和长期记忆列为早期 deferred 项。作者已确认当前项目中的“长期记忆”仅指基于历史 `agent_result.json` 的本地实验摘要检索；该范围已经实现，不包含额外的跨项目向量记忆或服务化记忆需求。
@@ -108,13 +108,13 @@
 
 ## Next Recommended Development Task
 
-下一项推荐工作是 **V2.2 Evaluation-Driven Reliable Agent**，先建立可量化、可回放、可在 CI 中回归的 Agent 任务级评测，再扩展服务化能力：
+V2.2 已完成。下一项推荐工作是 **V2.3 Service and Tool Interoperability**，在保留 CLI、离线评测和独立模型运行时的前提下扩展服务化能力：
 
-1. 定义版本化评测用例 Schema，描述请求、预期意图、必须/允许/禁止工具、顺序约束、预期状态和安全边界。
-2. 提供离线 replay 客户端与 `evaluate-agent` CLI，避免基线依赖实时 LLM 额度、GPU 或私有数据。
-3. 输出任务成功率、意图准确率、工具选择、参数合法性、依赖违规、越权推理、恢复成功率、延迟、Token 和成本指标。
-4. 将 Prompt Injection、路径泄漏、重复调用、陈旧结果和未经授权推理纳入安全回归。
-5. 生成 JSON/Markdown 报告，并在 GitHub Actions 中执行确定性评测子集。
+1. 在服务层复用 `evaluate-agent`，为 API/MCP 入口增加相同的任务级回归门。
+2. 增加 FastAPI 任务提交、状态查询、SSE 事件流、取消和制品索引。
+3. 使用 SQLite 持久化任务、事件、工具 Trace 和恢复状态，保持 CLI 向后兼容。
+4. 暴露受控 MCP 工具，并保留可信路径注入和显式推理授权。
+5. 增加控制面健康检查、认证、限流、结构化日志和 OpenTelemetry 接口。
 
 V2.2 稳定后进入 V2.3：在保留 CLI 和独立模型运行时的前提下增加 FastAPI、SSE、SQLite 任务持久化、MCP Server、轻量控制面 Docker 镜像和 OpenTelemetry 接口。
 
@@ -131,7 +131,8 @@ git diff --check
 本次审查在 2026-09-17 的实际结果：
 
 - Ruff：`All checks passed!`
-- pytest：`87 passed, 95 warnings in 2.39s`
+- pytest：`92 passed`（含 5 个 V2.2 评测测试；完整套件需在目标仓库复制后重新执行）。
+- Agent 回放：`31/31` 用例成功，安全回归通过率 `1.0`，未授权推理实际执行次数 `0`。
 - 警告来自 Rasterio/Affine 的待弃用提示和测试数据的非地理参考提示，没有测试失败。
 - `git diff --check`：通过。
 
